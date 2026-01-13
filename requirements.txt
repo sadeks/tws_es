@@ -1,0 +1,2 @@
+ib-async>=0.9.86
+watchdog>=3.0.0

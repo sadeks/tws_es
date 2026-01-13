@@ -8,7 +8,7 @@ class TradingUI:
     def __init__(self, root):
         self.root = root
         self.root.title("ES/MES Futures Trader")
-        self.root.geometry("500x600")
+        self.root.geometry("485x680")
 
         self.ib_conn = IBConnection()
         self.loop = asyncio.new_event_loop()
@@ -23,6 +23,11 @@ class TradingUI:
 
         self.connect_btn = ttk.Button(conn_frame, text="Connect", command=self.connect)
         self.connect_btn.pack(side="left", padx=5)
+
+        self.refresh_btn = ttk.Button(
+            conn_frame, text="Refresh Positions", command=self.refresh_positions, state="disabled"
+        )
+        self.refresh_btn.pack(side="right", padx=5)
 
         self.status_label = ttk.Label(conn_frame, text="Not Connected", foreground="red")
         self.status_label.pack(side="left", padx=10)
@@ -129,22 +134,203 @@ class TradingUI:
         print(f"Successfully connected on port {connected_port}")
         self.status_label.config(text=account_type, foreground="green")
         self.connect_btn.config(state="disabled")
+        self.refresh_btn.config(state="normal")
         self.execute_btn.config(state="normal")
 
         # Show position sync info
         sync_result = self.loop.run_until_complete(self.ib_conn.sync_positions())
         if sync_result:
+            # Get average entry price if there's a position
+            avg_price = 0.0
+            if self.ib_conn.current_quantity > 0:
+                avg_price = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price())
+
             info = f"""
 Connected to IB!
 
 ES Position: {sync_result['es_position']}
+Average Entry Price: {f'{avg_price:.2f}' if avg_price > 0 else 'N/A'}
 MES Resting Orders: {sync_result['mes_orders']}
 
 Status: {'LONG' if sync_result['active_long'] else 'SHORT' if sync_result['active_short'] else 'No Position'}
             """
             self.update_info(info)
 
+            # Check if we need to place MES hedge (at max contracts with no hedge)
+            try:
+                max_contracts = int(self.max_contracts_var.get())
+                stop_points = float(self.stop_points_var.get())
+
+                print("\n=== Auto-Hedge Check ===")
+                print(f"Current ES Quantity: {self.ib_conn.current_quantity}")
+                print(f"Max Contracts Setting: {max_contracts}")
+                print(f"Has Hedge: {sync_result.get('has_hedge', False)}")
+                print(f"Should place hedge: {self.ib_conn.current_quantity >= max_contracts and self.ib_conn.current_quantity > 0 and not sync_result.get('has_hedge', False)}")
+                print("========================\n")
+
+                if (
+                    self.ib_conn.current_quantity >= max_contracts
+                    and self.ib_conn.current_quantity > 0
+                    and not sync_result.get("has_hedge", False)
+                ):
+
+                    # Need to place MES hedge
+                    direction = "LONG" if sync_result["active_long"] else "SHORT"
+
+                    # Get avg entry price from ES positions
+                    avg_entry = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price())
+
+                    if avg_entry > 0:
+                        mes_action = "SELL" if direction == "LONG" else "BUY"
+
+                        if direction == "LONG":
+                            stop_price = avg_entry - stop_points
+                        else:
+                            stop_price = avg_entry + stop_points
+
+                        stop_price = round(stop_price * 4) / 4
+                        mes_quantity = self.ib_conn.current_quantity * 10
+
+                        print("\n!!! PLACING MES HEDGE !!!")
+                        print(f"Action: {mes_action}")
+                        print(f"Quantity: {mes_quantity}")
+                        print(f"Stop Price: {stop_price}")
+                        print(f"Based on avg entry: {avg_entry:.2f}\n")
+
+                        # Get MES contract
+                        if not self.ib_conn.mes_contract:
+                            self.ib_conn.mes_contract = self.loop.run_until_complete(
+                                self.ib_conn.get_front_month_contract("MES")
+                            )
+
+                        # Place the hedge
+                        self.loop.run_until_complete(
+                            self.ib_conn.place_stop_order(
+                                self.ib_conn.mes_contract, mes_action, mes_quantity, stop_price
+                            )
+                        )
+
+                        self.ib_conn.mes_hedge_placed = True
+
+                        info += f"\n\nMES Hedge Auto-Placed:\n{mes_action} {mes_quantity} @ {stop_price} (STOP)\nBased on avg entry: {avg_entry:.2f}"
+                        self.update_info(info)
+                        messagebox.showinfo(
+                            "Hedge Placed",
+                            f"MES hedge automatically placed!\n{mes_action} {mes_quantity} @ {stop_price}\nBased on avg entry: {avg_entry:.2f}",
+                        )
+                    else:
+                        print("Cannot place hedge: avg_entry is 0")
+                else:
+                    print("No hedge needed - conditions not met")
+            except Exception as e:
+                print(f"Error checking/placing hedge: {e}")
+                import traceback
+
+                traceback.print_exc()
+
         self.update_close_buttons()
+
+    def refresh_positions(self):
+        """Manually refresh positions from IBKR"""
+        if not self.ib_conn.connected:
+            messagebox.showerror("Error", "Not connected to IB")
+            return
+
+        print("\n*** Manual Refresh Triggered ***\n")
+
+        # Show position sync info
+        sync_result = self.loop.run_until_complete(self.ib_conn.sync_positions())
+        if sync_result:
+            # Get average entry price if there's a position
+            avg_price = 0.0
+            if self.ib_conn.current_quantity > 0:
+                avg_price = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price())
+
+            info = f"""
+Connected to IB!
+
+ES Position: {sync_result['es_position']}
+Average Entry Price: {f'{avg_price:.2f}' if avg_price > 0 else 'N/A'}
+MES Resting Orders: {sync_result['mes_orders']}
+
+Status: {'LONG' if sync_result['active_long'] else 'SHORT' if sync_result['active_short'] else 'No Position'}
+            """
+            self.update_info(info)
+
+            # Check if we need to place MES hedge (at max contracts with no hedge)
+            try:
+                max_contracts = int(self.max_contracts_var.get())
+                stop_points = float(self.stop_points_var.get())
+
+                print("\n=== Auto-Hedge Check ===")
+                print(f"Current ES Quantity: {self.ib_conn.current_quantity}")
+                print(f"Max Contracts Setting: {max_contracts}")
+                print(f"Has Hedge: {sync_result.get('has_hedge', False)}")
+                print(f"Should place hedge: {self.ib_conn.current_quantity >= max_contracts and self.ib_conn.current_quantity > 0 and not sync_result.get('has_hedge', False)}")
+                print("========================\n")
+
+                if (
+                    self.ib_conn.current_quantity >= max_contracts
+                    and self.ib_conn.current_quantity > 0
+                    and not sync_result.get("has_hedge", False)
+                ):
+
+                    # Need to place MES hedge
+                    direction = "LONG" if sync_result["active_long"] else "SHORT"
+
+                    # Get avg entry price from ES positions
+                    avg_entry = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price())
+
+                    if avg_entry > 0:
+                        mes_action = "SELL" if direction == "LONG" else "BUY"
+
+                        if direction == "LONG":
+                            stop_price = avg_entry - stop_points
+                        else:
+                            stop_price = avg_entry + stop_points
+
+                        stop_price = round(stop_price * 4) / 4
+                        mes_quantity = self.ib_conn.current_quantity * 10
+
+                        print("\n!!! PLACING MES HEDGE !!!")
+                        print(f"Action: {mes_action}")
+                        print(f"Quantity: {mes_quantity}")
+                        print(f"Stop Price: {stop_price}")
+                        print(f"Based on avg entry: {avg_entry:.2f}\n")
+
+                        # Get MES contract
+                        if not self.ib_conn.mes_contract:
+                            self.ib_conn.mes_contract = self.loop.run_until_complete(
+                                self.ib_conn.get_front_month_contract("MES")
+                            )
+
+                        # Place the hedge
+                        self.loop.run_until_complete(
+                            self.ib_conn.place_stop_order(
+                                self.ib_conn.mes_contract, mes_action, mes_quantity, stop_price
+                            )
+                        )
+
+                        self.ib_conn.mes_hedge_placed = True
+
+                        info += f"\n\nMES Hedge Auto-Placed:\n{mes_action} {mes_quantity} @ {stop_price} (STOP)\nBased on avg entry: {avg_entry:.2f}"
+                        self.update_info(info)
+                        messagebox.showinfo(
+                            "Hedge Placed",
+                            f"MES hedge automatically placed!\n{mes_action} {mes_quantity} @ {stop_price}\nBased on avg entry: {avg_entry:.2f}",
+                        )
+                    else:
+                        print("Cannot place hedge: avg_entry is 0")
+                else:
+                    print("No hedge needed - conditions not met")
+            except Exception as e:
+                print(f"Error checking/placing hedge: {e}")
+                import traceback
+
+                traceback.print_exc()
+
+        self.update_close_buttons()
+        messagebox.showinfo("Refresh Complete", "Positions refreshed from IBKR!")
 
     def execute_trade(self):
         if not self.ib_conn.connected:
@@ -157,6 +343,8 @@ Status: {'LONG' if sync_result['active_long'] else 'SHORT' if sync_result['activ
             entry_price_str = self.entry_price_var.get().strip()
             entry_price = float(entry_price_str) if entry_price_str else None
             stop_points = float(self.stop_points_var.get())
+            ladder_interval = float(self.ladder_interval_var.get())
+            max_contracts = int(self.max_contracts_var.get())
 
             if quantity <= 0:
                 messagebox.showerror("Error", "Quantity must be greater than 0")
@@ -166,32 +354,66 @@ Status: {'LONG' if sync_result['active_long'] else 'SHORT' if sync_result['activ
                 messagebox.showerror("Error", "Stop loss must be greater than 0")
                 return
 
+            if ladder_interval <= 0:
+                messagebox.showerror("Error", "Ladder interval must be greater than 0")
+                return
+
+            if max_contracts <= 0:
+                messagebox.showerror("Error", "Max contracts must be greater than 0")
+                return
+
             # Disable button during execution
             self.execute_btn.config(state="disabled")
             self.update_info("Executing trade...\n")
 
             # Execute trade
             result = self.loop.run_until_complete(
-                self.ib_conn.execute_trade_with_ladder(direction, entry_price, stop_points, quantity)
+                self.ib_conn.execute_trade_with_ladder(
+                    direction, entry_price, stop_points, quantity, ladder_interval, max_contracts
+                )
             )
 
             if result["success"]:
-                info = f"""
+                # Get current average entry price
+                current_avg = self.ib_conn.avg_entry_price
+
+                # Check if MES stop was placed (max contracts reached)
+                if "mes_stop" in result:
+                    info = f"""
 Trade Executed Successfully!
 
 Direction: {result['direction']}
 Quantity: {result['quantity']} ES contracts
-ES Fill Price: {result['es_fill']}
+Average Entry: {current_avg:.2f}
 MES Stop Price: {result['mes_stop']}
 Stop Loss: {result['stop_points']} points
 
-ES: {direction} {result['quantity']} contract(s) @ {result['es_fill']}
+ES: {direction} {result['quantity']} contract(s) @ avg {current_avg:.2f}
 MES: {'SELL' if direction == 'LONG' else 'BUY'} {result['mes_quantity']} contracts @ {result['mes_stop']} (STOP)
 
 The MES stop order is now resting. Manage the trade manually from here.
-                """
-                self.update_info(info)
-                messagebox.showinfo("Success", "Trade executed! MES stop order placed.")
+                    """
+                    self.update_info(info)
+                    messagebox.showinfo("Success", "Trade executed! MES stop order placed.")
+                else:
+                    # Ladder orders placed, waiting for fills
+                    ladder_info = "\n".join([f"  - {o['action']} 1 ES @ {o['price']}" for o in result["ladder_orders"]])
+                    info = f"""
+Trade Executed Successfully!
+
+Direction: {result['direction']}
+Initial Quantity: {result['quantity']} ES contracts
+Initial Fill: {result['es_fill']:.2f}
+Current Avg Entry: {current_avg:.2f}
+
+Ladder Orders Placed:
+{ladder_info}
+
+No MES stop order yet - ladder orders are active.
+When max contracts are reached, MES stop will be placed automatically.
+                    """
+                    self.update_info(info)
+                    messagebox.showinfo("Success", "Initial trade executed! Ladder orders placed.")
 
                 # Force button update
                 self.root.update_idletasks()
@@ -219,38 +441,48 @@ The MES stop order is now resting. Manage the trade manually from here.
 
     def update_close_buttons(self):
         """Update close button states based on active positions"""
-        if self.ib_conn.active_long:
+        # Close Long enabled if: ES LONG position OR MES LONG position
+        has_long_side = self.ib_conn.active_long or self.ib_conn.mes_position > 0
+        if has_long_side:
             self.close_long_btn.config(state="normal")
         else:
             self.close_long_btn.config(state="disabled")
 
-        if self.ib_conn.active_short:
+        # Close Short enabled if: ES SHORT position OR MES SHORT position
+        has_short_side = self.ib_conn.active_short or self.ib_conn.mes_position < 0
+        if has_short_side:
             self.close_short_btn.config(state="normal")
         else:
             self.close_short_btn.config(state="disabled")
 
     def close_long(self):
         """Close long position"""
-        if not messagebox.askyesno("Confirm", "Close LONG position and cancel MES stop?"):
+        if not messagebox.askyesno("Confirm", "Close LONG side (ES and/or MES positions)?"):
             return
 
         self.close_long_btn.config(state="disabled")
-        self.update_info("Closing long position...\n")
+        self.update_info("Closing long side...\n")
 
         result = self.loop.run_until_complete(self.ib_conn.close_position("LONG"))
 
         if result["success"]:
+            closed_list = "\n".join(result.get('closed_contracts', []))
             info = f"""
 Position Closed!
 
 Direction: LONG
-Close Price: {result['close_price']}
-MES Stop Orders Cancelled: {result['cancelled_orders']}
+Closed Contracts:
+{closed_list}
+
+Average Fill: {result['close_price']:.2f}
+Orders Cancelled: {result['cancelled_orders']}
 
 Position successfully closed.
             """
             self.update_info(info)
-            messagebox.showinfo("Success", "Long position closed!")
+            messagebox.showinfo("Success", "Long side closed!")
+            # Refresh positions to update button states
+            self.loop.run_until_complete(self.ib_conn.sync_positions())
             self.update_close_buttons()
         else:
             self.update_info(f"ERROR: {result['message']}\n")
@@ -259,26 +491,32 @@ Position successfully closed.
 
     def close_short(self):
         """Close short position"""
-        if not messagebox.askyesno("Confirm", "Close SHORT position and cancel MES stop?"):
+        if not messagebox.askyesno("Confirm", "Close SHORT side (ES and/or MES positions)?"):
             return
 
         self.close_short_btn.config(state="disabled")
-        self.update_info("Closing short position...\n")
+        self.update_info("Closing short side...\n")
 
         result = self.loop.run_until_complete(self.ib_conn.close_position("SHORT"))
 
         if result["success"]:
+            closed_list = "\n".join(result.get('closed_contracts', []))
             info = f"""
 Position Closed!
 
 Direction: SHORT
-Close Price: {result['close_price']}
-MES Stop Orders Cancelled: {result['cancelled_orders']}
+Closed Contracts:
+{closed_list}
+
+Average Fill: {result['close_price']:.2f}
+Orders Cancelled: {result['cancelled_orders']}
 
 Position successfully closed.
             """
             self.update_info(info)
-            messagebox.showinfo("Success", "Short position closed!")
+            messagebox.showinfo("Success", "Short side closed!")
+            # Refresh positions to update button states
+            self.loop.run_until_complete(self.ib_conn.sync_positions())
             self.update_close_buttons()
         else:
             self.update_info(f"ERROR: {result['message']}\n")
