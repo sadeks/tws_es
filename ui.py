@@ -143,7 +143,7 @@ class TradingUI:
             # Get average entry price if there's a position
             avg_price = 0.0
             if self.ib_conn.current_quantity > 0:
-                avg_price = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price())
+                avg_price = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price(force_refresh=True))
 
             info = f"""
 Connected to IB!
@@ -177,8 +177,8 @@ Status: {'LONG' if sync_result['active_long'] else 'SHORT' if sync_result['activ
                     # Need to place MES hedge
                     direction = "LONG" if sync_result["active_long"] else "SHORT"
 
-                    # Get avg entry price from ES positions
-                    avg_entry = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price())
+                    # Get avg entry price from ES positions (force refresh to get accurate value)
+                    avg_entry = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price(force_refresh=True))
 
                     if avg_entry > 0:
                         mes_action = "SELL" if direction == "LONG" else "BUY"
@@ -244,7 +244,7 @@ Status: {'LONG' if sync_result['active_long'] else 'SHORT' if sync_result['activ
             # Get average entry price if there's a position
             avg_price = 0.0
             if self.ib_conn.current_quantity > 0:
-                avg_price = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price())
+                avg_price = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price(force_refresh=True))
 
             info = f"""
 Connected to IB!
@@ -278,8 +278,8 @@ Status: {'LONG' if sync_result['active_long'] else 'SHORT' if sync_result['activ
                     # Need to place MES hedge
                     direction = "LONG" if sync_result["active_long"] else "SHORT"
 
-                    # Get avg entry price from ES positions
-                    avg_entry = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price())
+                    # Get avg entry price from ES positions (force refresh to get accurate value)
+                    avg_entry = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price(force_refresh=True))
 
                     if avg_entry > 0:
                         mes_action = "SELL" if direction == "LONG" else "BUY"

@@ -209,18 +209,22 @@ class IBConnection:
 
                             self.ladder_orders.clear()
 
-                            # Place MES hedge
+                            # Place MES hedge - get fresh average from IBKR
                             mes_action = "SELL" if self.direction == "LONG" else "BUY"
 
+                            # CRITICAL: Get fresh average from IBKR, don't use cached value
+                            fresh_avg = await self.get_avg_entry_price(force_refresh=True)
+                            print(f"Using fresh average from IBKR: {fresh_avg:.2f}")
+
                             if self.direction == "LONG":
-                                stop_price = self.avg_entry_price - self.stop_points
+                                stop_price = fresh_avg - self.stop_points
                             else:
-                                stop_price = self.avg_entry_price + self.stop_points
+                                stop_price = fresh_avg + self.stop_points
 
                             stop_price = round(stop_price * 4) / 4
                             mes_quantity = self.current_quantity * 10
 
-                            print(f"Placing MES {mes_action} stop @ {stop_price} for {mes_quantity} contracts")
+                            print(f"Placing MES {mes_action} stop @ {stop_price} for {mes_quantity} contracts (based on avg {fresh_avg:.2f})")
                             await self.place_stop_order(self.mes_contract, mes_action, mes_quantity, stop_price)
 
                             self.mes_hedge_placed = True
@@ -364,11 +368,15 @@ class IBConnection:
         except Exception as e:
             return {"success": False, "message": f"Error: {str(e)}"}
 
-    async def get_avg_entry_price(self):
-        """Get average entry price from ES position"""
+    async def get_avg_entry_price(self, force_refresh=False):
+        """Get average entry price from ES position
+
+        Args:
+            force_refresh: If True, always get fresh data from IBKR (ignore cached value)
+        """
         try:
-            # Try to get from stored avg_entry_price first (if set by our trades)
-            if self.avg_entry_price > 0:
+            # If force_refresh is False and we have a stored value, use it
+            if not force_refresh and self.avg_entry_price > 0:
                 return self.avg_entry_price
 
             # Get from IBKR position data (most accurate for existing positions)
