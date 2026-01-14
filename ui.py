@@ -374,46 +374,28 @@ Status: {'LONG' if sync_result['active_long'] else 'SHORT' if sync_result['activ
             )
 
             if result["success"]:
-                # Get current average entry price
-                current_avg = self.ib_conn.avg_entry_price
+                # Display trade execution info
+                ladder_info = ""
+                if result.get("ladder_orders"):
+                    ladder_info = "\n\nLadder Orders Placed:\n" + "\n".join([f"  - {o['action']} 1 ES @ {o['price']}" for o in result["ladder_orders"]])
 
-                # Check if MES stop was placed (max contracts reached)
-                if "mes_stop" in result:
-                    info = f"""
-Trade Executed Successfully!
-
-Direction: {result['direction']}
-Quantity: {result['quantity']} ES contracts
-Average Entry: {current_avg:.2f}
-MES Stop Price: {result['mes_stop']}
-Stop Loss: {result['stop_points']} points
-
-ES: {direction} {result['quantity']} contract(s) @ avg {current_avg:.2f}
-MES: {'SELL' if direction == 'LONG' else 'BUY'} {result['mes_quantity']} contracts @ {result['mes_stop']} (STOP)
-
-The MES stop order is now resting. Manage the trade manually from here.
-                    """
-                    self.update_info(info)
-                    messagebox.showinfo("Success", "Trade executed! MES stop order placed.")
-                else:
-                    # Ladder orders placed, waiting for fills
-                    ladder_info = "\n".join([f"  - {o['action']} 1 ES @ {o['price']}" for o in result["ladder_orders"]])
-                    info = f"""
+                info = f"""
 Trade Executed Successfully!
 
 Direction: {result['direction']}
 Initial Quantity: {result['quantity']} ES contracts
 Initial Fill: {result['es_fill']:.2f}
-Current Avg Entry: {current_avg:.2f}
+Expected Avg (if all fill): {result['expected_avg']:.2f}
 
-Ladder Orders Placed:
+MES Hedge Placed:
+{'SELL' if direction == 'LONG' else 'BUY'} {result['mes_quantity']} MES @ {result['mes_stop']} (STOP)
+Stop Loss: {result['stop_points']} points
 {ladder_info}
 
-No MES stop order yet - ladder orders are active.
-When max contracts are reached, MES stop will be placed automatically.
-                    """
-                    self.update_info(info)
-                    messagebox.showinfo("Success", "Initial trade executed! Ladder orders placed.")
+MES hedge is resting from the start, protecting max position.
+                """
+                self.update_info(info)
+                messagebox.showinfo("Success", "Trade executed! MES hedge placed upfront.")
 
                 # Force button update
                 self.root.update_idletasks()
@@ -457,9 +439,6 @@ When max contracts are reached, MES stop will be placed automatically.
 
     def close_long(self):
         """Close long position"""
-        if not messagebox.askyesno("Confirm", "Close LONG side (ES and/or MES positions)?"):
-            return
-
         self.close_long_btn.config(state="disabled")
         self.update_info("Closing long side...\n")
 
@@ -491,9 +470,6 @@ Position successfully closed.
 
     def close_short(self):
         """Close short position"""
-        if not messagebox.askyesno("Confirm", "Close SHORT side (ES and/or MES positions)?"):
-            return
-
         self.close_short_btn.config(state="disabled")
         self.update_info("Closing short side...\n")
 

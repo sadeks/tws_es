@@ -17,7 +17,6 @@ class IBConnection:
         self.stop_points = 0
         self.direction = None
         self.ladder_orders = []
-        self.monitor_task = None
         self.mes_hedge_placed = False
         self.mes_position = 0  # Track MES position (negative = short, positive = long)
 
@@ -165,74 +164,6 @@ class IBConnection:
         trade = self.ib.placeOrder(contract, order)
         return trade
 
-    async def monitor_ladder_fills(self):
-        """Background task to monitor ladder order fills and place MES hedge when max reached"""
-        print("Starting ladder fill monitor...")
-
-        try:
-            while self.ladder_orders and not self.mes_hedge_placed:
-                await asyncio.sleep(1)  # Check every second
-
-                # Check each ladder order for fills
-                for ladder_info in self.ladder_orders[:]:  # Copy list to allow removal during iteration
-                    trade = ladder_info["trade"]
-
-                    # Check if order is filled
-                    if trade.isDone() and trade.orderStatus.status == "Filled":
-                        print(f"Ladder order filled at {ladder_info['price']}")
-
-                        # Get fill details
-                        fill_price = ladder_info["price"]
-                        fill_qty = 1  # Ladder orders are always 1 contract
-
-                        # Update position tracking
-                        total_cost = (self.avg_entry_price * self.current_quantity) + (fill_price * fill_qty)
-                        self.current_quantity += fill_qty
-                        self.avg_entry_price = total_cost / self.current_quantity
-
-                        print(f"Updated position: {self.current_quantity} contracts @ avg {self.avg_entry_price:.2f}")
-
-                        # Remove filled order from list
-                        self.ladder_orders.remove(ladder_info)
-
-                        # Check if we reached max contracts
-                        if self.current_quantity >= self.max_contracts:
-                            print(f"Max contracts ({self.max_contracts}) reached! Placing MES hedge...")
-
-                            # Cancel any remaining ladder orders
-                            for remaining in self.ladder_orders:
-                                try:
-                                    self.ib.cancelOrder(remaining["trade"].order)
-                                    print(f"Cancelled remaining ladder order at {remaining['price']}")
-                                except Exception as e:
-                                    print(f"Error cancelling order: {e}")
-
-                            self.ladder_orders.clear()
-
-                            # Place MES hedge - get fresh average from IBKR
-                            mes_action = "SELL" if self.direction == "LONG" else "BUY"
-
-                            # CRITICAL: Get fresh average from IBKR, don't use cached value
-                            fresh_avg = await self.get_avg_entry_price(force_refresh=True)
-                            print(f"Using fresh average from IBKR: {fresh_avg:.2f}")
-
-                            if self.direction == "LONG":
-                                stop_price = fresh_avg - self.stop_points
-                            else:
-                                stop_price = fresh_avg + self.stop_points
-
-                            stop_price = round(stop_price * 4) / 4
-                            mes_quantity = self.current_quantity * 10
-
-                            print(f"Placing MES {mes_action} stop @ {stop_price} for {mes_quantity} contracts (based on avg {fresh_avg:.2f})")
-                            await self.place_stop_order(self.mes_contract, mes_action, mes_quantity, stop_price)
-
-                            self.mes_hedge_placed = True
-                            print("MES hedge placed successfully!")
-                            break
-
-        except Exception as e:
-            print(f"Error in ladder monitor: {e}")
 
     async def execute_trade_with_ladder(
         self, direction, entry_price, stop_points, quantity, ladder_interval, max_contracts
@@ -301,69 +232,65 @@ class IBConnection:
             else:
                 self.active_short = True
 
-            # Place ladder orders if we haven't reached max contracts
+            # Calculate expected average if all ladder orders fill
             self.ladder_orders = []
+            ladder_prices = []
+
             if self.current_quantity < max_contracts:
                 remaining_contracts = max_contracts - self.current_quantity
 
+                # Calculate all ladder prices first
                 for i in range(1, remaining_contracts + 1):
                     if direction == "LONG":
-                        # For LONG, buy lower (favorable prices)
                         ladder_price = fill_price - (i * ladder_interval)
                     else:
-                        # For SHORT, sell higher (favorable prices)
                         ladder_price = fill_price + (i * ladder_interval)
-
-                    # Round to tick size
                     ladder_price = round(ladder_price * 4) / 4
+                    ladder_prices.append(ladder_price)
 
+                # Calculate expected average if all fill
+                total_cost = fill_price * quantity  # Initial fill
+                total_qty = quantity
+                for ladder_price in ladder_prices:
+                    total_cost += ladder_price * 1  # Each ladder is 1 contract
+                    total_qty += 1
+
+                expected_avg = total_cost / total_qty
+                print(f"Expected average if all ladders fill: {expected_avg:.2f}")
+
+                # Place ladder orders
+                for i, ladder_price in enumerate(ladder_prices, 1):
                     print(f"Placing ladder order {i}: {es_action} 1 ES @ {ladder_price}")
-
-                    # Place limit order for ladder
                     ladder_trade = await self.place_limit_order(es, es_action, 1, ladder_price)
-
                     self.ladder_orders.append({"trade": ladder_trade, "price": ladder_price, "action": es_action})
-
-            # Only place MES hedge if we're already at max contracts
-            if self.current_quantity >= max_contracts:
-                # Place MES hedge
-                if direction == "LONG":
-                    stop_price = self.avg_entry_price - stop_points
-                else:
-                    stop_price = self.avg_entry_price + stop_points
-
-                stop_price = round(stop_price * 4) / 4
-                mes_quantity = self.current_quantity * 10
-
-                print(f"Max contracts reached! Placing MES stop order at {stop_price}...")
-                mes_trade = await self.place_stop_order(mes, mes_action, mes_quantity, stop_price)
-                self.mes_hedge_placed = True
-
-                return {
-                    "success": True,
-                    "es_fill": fill_price,
-                    "direction": direction,
-                    "stop_points": stop_points,
-                    "quantity": self.current_quantity,
-                    "ladder_orders": [{"price": o["price"], "action": o["action"]} for o in self.ladder_orders],
-                    "mes_stop": stop_price,
-                    "mes_quantity": mes_quantity,
-                }
             else:
-                # Start background monitoring task for ladder fills
-                self.mes_hedge_placed = False
-                if self.monitor_task:
-                    self.monitor_task.cancel()
-                self.monitor_task = asyncio.create_task(self.monitor_ladder_fills())
+                # Already at max, use current average
+                expected_avg = self.avg_entry_price
 
-                return {
-                    "success": True,
-                    "es_fill": fill_price,
-                    "direction": direction,
-                    "stop_points": stop_points,
-                    "quantity": self.current_quantity,
-                    "ladder_orders": [{"price": o["price"], "action": o["action"]} for o in self.ladder_orders],
-                }
+            # ALWAYS place MES hedge upfront (based on expected average)
+            if direction == "LONG":
+                stop_price = expected_avg - stop_points
+            else:
+                stop_price = expected_avg + stop_points
+
+            stop_price = round(stop_price * 4) / 4
+            mes_quantity = max_contracts * 10  # Hedge for full max contracts
+
+            print(f"Placing MES hedge upfront: {mes_action} {mes_quantity} @ {stop_price} (based on expected avg {expected_avg:.2f})")
+            mes_trade = await self.place_stop_order(mes, mes_action, mes_quantity, stop_price)
+            self.mes_hedge_placed = True
+
+            return {
+                "success": True,
+                "es_fill": fill_price,
+                "direction": direction,
+                "stop_points": stop_points,
+                "quantity": self.current_quantity,
+                "ladder_orders": [{"price": o["price"], "action": o["action"]} for o in self.ladder_orders],
+                "mes_stop": stop_price,
+                "mes_quantity": mes_quantity,
+                "expected_avg": expected_avg,
+            }
 
         except Exception as e:
             return {"success": False, "message": f"Error: {str(e)}"}
@@ -477,11 +404,6 @@ class IBConnection:
                     self.ib.cancelOrder(trade.order)
                     cancelled_count += 1
                     print(f"Cancelled {trade.contract.symbol} order")
-
-            # Cancel monitoring task if running
-            if self.monitor_task:
-                self.monitor_task.cancel()
-                self.monitor_task = None
 
             # Reset position tracking
             self.ladder_orders = []
