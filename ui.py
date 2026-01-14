@@ -156,78 +156,6 @@ Status: {'LONG' if sync_result['active_long'] else 'SHORT' if sync_result['activ
             """
             self.update_info(info)
 
-            # Check if we need to place MES hedge (at max contracts with no hedge)
-            try:
-                max_contracts = int(self.max_contracts_var.get())
-                stop_points = float(self.stop_points_var.get())
-
-                print("\n=== Auto-Hedge Check ===")
-                print(f"Current ES Quantity: {self.ib_conn.current_quantity}")
-                print(f"Max Contracts Setting: {max_contracts}")
-                print(f"Has Hedge: {sync_result.get('has_hedge', False)}")
-                print(f"Should place hedge: {self.ib_conn.current_quantity >= max_contracts and self.ib_conn.current_quantity > 0 and not sync_result.get('has_hedge', False)}")
-                print("========================\n")
-
-                if (
-                    self.ib_conn.current_quantity >= max_contracts
-                    and self.ib_conn.current_quantity > 0
-                    and not sync_result.get("has_hedge", False)
-                ):
-
-                    # Need to place MES hedge
-                    direction = "LONG" if sync_result["active_long"] else "SHORT"
-
-                    # Get avg entry price from ES positions (force refresh to get accurate value)
-                    avg_entry = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price(force_refresh=True))
-
-                    if avg_entry > 0:
-                        mes_action = "SELL" if direction == "LONG" else "BUY"
-
-                        if direction == "LONG":
-                            stop_price = avg_entry - stop_points
-                        else:
-                            stop_price = avg_entry + stop_points
-
-                        stop_price = round(stop_price * 4) / 4
-                        mes_quantity = self.ib_conn.current_quantity * 10
-
-                        print("\n!!! PLACING MES HEDGE !!!")
-                        print(f"Action: {mes_action}")
-                        print(f"Quantity: {mes_quantity}")
-                        print(f"Stop Price: {stop_price}")
-                        print(f"Based on avg entry: {avg_entry:.2f}\n")
-
-                        # Get MES contract
-                        if not self.ib_conn.mes_contract:
-                            self.ib_conn.mes_contract = self.loop.run_until_complete(
-                                self.ib_conn.get_front_month_contract("MES")
-                            )
-
-                        # Place the hedge
-                        self.loop.run_until_complete(
-                            self.ib_conn.place_stop_order(
-                                self.ib_conn.mes_contract, mes_action, mes_quantity, stop_price
-                            )
-                        )
-
-                        self.ib_conn.mes_hedge_placed = True
-
-                        info += f"\n\nMES Hedge Auto-Placed:\n{mes_action} {mes_quantity} @ {stop_price} (STOP)\nBased on avg entry: {avg_entry:.2f}"
-                        self.update_info(info)
-                        messagebox.showinfo(
-                            "Hedge Placed",
-                            f"MES hedge automatically placed!\n{mes_action} {mes_quantity} @ {stop_price}\nBased on avg entry: {avg_entry:.2f}",
-                        )
-                    else:
-                        print("Cannot place hedge: avg_entry is 0")
-                else:
-                    print("No hedge needed - conditions not met")
-            except Exception as e:
-                print(f"Error checking/placing hedge: {e}")
-                import traceback
-
-                traceback.print_exc()
-
         self.update_close_buttons()
 
     def refresh_positions(self):
@@ -256,78 +184,6 @@ MES Resting Orders: {sync_result['mes_orders']}
 Status: {'LONG' if sync_result['active_long'] else 'SHORT' if sync_result['active_short'] else 'No Position'}
             """
             self.update_info(info)
-
-            # Check if we need to place MES hedge (at max contracts with no hedge)
-            try:
-                max_contracts = int(self.max_contracts_var.get())
-                stop_points = float(self.stop_points_var.get())
-
-                print("\n=== Auto-Hedge Check ===")
-                print(f"Current ES Quantity: {self.ib_conn.current_quantity}")
-                print(f"Max Contracts Setting: {max_contracts}")
-                print(f"Has Hedge: {sync_result.get('has_hedge', False)}")
-                print(f"Should place hedge: {self.ib_conn.current_quantity >= max_contracts and self.ib_conn.current_quantity > 0 and not sync_result.get('has_hedge', False)}")
-                print("========================\n")
-
-                if (
-                    self.ib_conn.current_quantity >= max_contracts
-                    and self.ib_conn.current_quantity > 0
-                    and not sync_result.get("has_hedge", False)
-                ):
-
-                    # Need to place MES hedge
-                    direction = "LONG" if sync_result["active_long"] else "SHORT"
-
-                    # Get avg entry price from ES positions (force refresh to get accurate value)
-                    avg_entry = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price(force_refresh=True))
-
-                    if avg_entry > 0:
-                        mes_action = "SELL" if direction == "LONG" else "BUY"
-
-                        if direction == "LONG":
-                            stop_price = avg_entry - stop_points
-                        else:
-                            stop_price = avg_entry + stop_points
-
-                        stop_price = round(stop_price * 4) / 4
-                        mes_quantity = self.ib_conn.current_quantity * 10
-
-                        print("\n!!! PLACING MES HEDGE !!!")
-                        print(f"Action: {mes_action}")
-                        print(f"Quantity: {mes_quantity}")
-                        print(f"Stop Price: {stop_price}")
-                        print(f"Based on avg entry: {avg_entry:.2f}\n")
-
-                        # Get MES contract
-                        if not self.ib_conn.mes_contract:
-                            self.ib_conn.mes_contract = self.loop.run_until_complete(
-                                self.ib_conn.get_front_month_contract("MES")
-                            )
-
-                        # Place the hedge
-                        self.loop.run_until_complete(
-                            self.ib_conn.place_stop_order(
-                                self.ib_conn.mes_contract, mes_action, mes_quantity, stop_price
-                            )
-                        )
-
-                        self.ib_conn.mes_hedge_placed = True
-
-                        info += f"\n\nMES Hedge Auto-Placed:\n{mes_action} {mes_quantity} @ {stop_price} (STOP)\nBased on avg entry: {avg_entry:.2f}"
-                        self.update_info(info)
-                        messagebox.showinfo(
-                            "Hedge Placed",
-                            f"MES hedge automatically placed!\n{mes_action} {mes_quantity} @ {stop_price}\nBased on avg entry: {avg_entry:.2f}",
-                        )
-                    else:
-                        print("Cannot place hedge: avg_entry is 0")
-                else:
-                    print("No hedge needed - conditions not met")
-            except Exception as e:
-                print(f"Error checking/placing hedge: {e}")
-                import traceback
-
-                traceback.print_exc()
 
         self.update_close_buttons()
         messagebox.showinfo("Refresh Complete", "Positions refreshed from IBKR!")
@@ -377,7 +233,7 @@ Status: {'LONG' if sync_result['active_long'] else 'SHORT' if sync_result['activ
                 # Display trade execution info
                 ladder_info = ""
                 if result.get("ladder_orders"):
-                    ladder_info = "\n\nLadder Orders Placed:\n" + "\n".join([f"  - {o['action']} 1 ES @ {o['price']}" for o in result["ladder_orders"]])
+                    ladder_info = "\n\nLadder Orders Placed:\n" + "\n".join([f"  - {o['action']} {o['quantity']} ES @ {o['price']}" for o in result["ladder_orders"]])
 
                 info = f"""
 Trade Executed Successfully!
@@ -395,7 +251,6 @@ Stop Loss: {result['stop_points']} points
 MES hedge is resting from the start, protecting max position.
                 """
                 self.update_info(info)
-                messagebox.showinfo("Success", "Trade executed! MES hedge placed upfront.")
 
                 # Force button update
                 self.root.update_idletasks()
@@ -459,7 +314,6 @@ Orders Cancelled: {result['cancelled_orders']}
 Position successfully closed.
             """
             self.update_info(info)
-            messagebox.showinfo("Success", "Long side closed!")
             # Refresh positions to update button states
             self.loop.run_until_complete(self.ib_conn.sync_positions())
             self.update_close_buttons()
@@ -490,7 +344,6 @@ Orders Cancelled: {result['cancelled_orders']}
 Position successfully closed.
             """
             self.update_info(info)
-            messagebox.showinfo("Success", "Short side closed!")
             # Refresh positions to update button states
             self.loop.run_until_complete(self.ib_conn.sync_positions())
             self.update_close_buttons()

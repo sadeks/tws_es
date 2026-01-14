@@ -118,8 +118,12 @@ class IBConnection:
 
         return trade, fill_price
 
-    async def place_limit_order(self, contract, action, quantity, limit_price):
-        """Place limit order (BUY/SELL)"""
+    async def place_limit_order(self, contract, action, quantity, limit_price, wait_for_fill=True):
+        """Place limit order (BUY/SELL)
+
+        Args:
+            wait_for_fill: If True, wait for order to fill. If False, just place and return limit price.
+        """
         # Qualify contract to ensure it's properly set up for trading
         qualified = await self.ib.qualifyContractsAsync(contract)
         if qualified:
@@ -127,6 +131,10 @@ class IBConnection:
 
         order = LimitOrder(action, quantity, lmtPrice=limit_price)
         trade = self.ib.placeOrder(contract, order)
+
+        # If not waiting for fill, just return the limit price
+        if not wait_for_fill:
+            return trade, limit_price
 
         # Wait for fill
         while not trade.isDone():
@@ -145,6 +153,10 @@ class IBConnection:
 
         if fill_price == 0.0 and trade.orderStatus.avgFillPrice:
             fill_price = trade.orderStatus.avgFillPrice
+
+        # Fallback: if still 0, use limit price (order was filled at limit)
+        if fill_price == 0.0:
+            fill_price = limit_price
 
         return trade, fill_price
 
@@ -209,9 +221,9 @@ class IBConnection:
         try:
             # Place initial ES order (limit or market based on entry_price)
             if entry_price:
-                # Limit order
+                # Limit order - wait for fill to get actual entry price
                 print(f"Placing {es_action} limit order for {quantity} ES @ {entry_price}...")
-                es_trade, fill_price = await self.place_limit_order(es, es_action, quantity, entry_price)
+                es_trade, fill_price = await self.place_limit_order(es, es_action, quantity, entry_price, wait_for_fill=True)
             else:
                 # Market order
                 print(f"Placing {es_action} market order for {quantity} ES...")
@@ -238,9 +250,11 @@ class IBConnection:
 
             if self.current_quantity < max_contracts:
                 remaining_contracts = max_contracts - self.current_quantity
+                # Number of ladder steps (each step adds 'quantity' contracts)
+                num_ladder_steps = remaining_contracts // quantity
 
                 # Calculate all ladder prices first
-                for i in range(1, remaining_contracts + 1):
+                for i in range(1, num_ladder_steps + 1):
                     if direction == "LONG":
                         ladder_price = fill_price - (i * ladder_interval)
                     else:
@@ -252,17 +266,17 @@ class IBConnection:
                 total_cost = fill_price * quantity  # Initial fill
                 total_qty = quantity
                 for ladder_price in ladder_prices:
-                    total_cost += ladder_price * 1  # Each ladder is 1 contract
-                    total_qty += 1
+                    total_cost += ladder_price * quantity  # Each ladder adds 'quantity' contracts
+                    total_qty += quantity
 
                 expected_avg = total_cost / total_qty
                 print(f"Expected average if all ladders fill: {expected_avg:.2f}")
 
-                # Place ladder orders
+                # Place ladder orders (don't wait for fills - these are resting orders)
                 for i, ladder_price in enumerate(ladder_prices, 1):
-                    print(f"Placing ladder order {i}: {es_action} 1 ES @ {ladder_price}")
-                    ladder_trade = await self.place_limit_order(es, es_action, 1, ladder_price)
-                    self.ladder_orders.append({"trade": ladder_trade, "price": ladder_price, "action": es_action})
+                    print(f"Placing ladder order {i}: {es_action} {quantity} ES @ {ladder_price}")
+                    ladder_trade, _ = await self.place_limit_order(es, es_action, quantity, ladder_price, wait_for_fill=False)
+                    self.ladder_orders.append({"trade": ladder_trade, "price": ladder_price, "action": es_action, "quantity": quantity})
             else:
                 # Already at max, use current average
                 expected_avg = self.avg_entry_price
@@ -286,7 +300,7 @@ class IBConnection:
                 "direction": direction,
                 "stop_points": stop_points,
                 "quantity": self.current_quantity,
-                "ladder_orders": [{"price": o["price"], "action": o["action"]} for o in self.ladder_orders],
+                "ladder_orders": [{"price": o["price"], "action": o["action"], "quantity": o["quantity"]} for o in self.ladder_orders],
                 "mes_stop": stop_price,
                 "mes_quantity": mes_quantity,
                 "expected_avg": expected_avg,
