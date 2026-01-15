@@ -8,7 +8,7 @@ class TradingUI:
     def __init__(self, root):
         self.root = root
         self.root.title("ES/MES Futures Trader")
-        self.root.geometry("485x680")
+        self.root.geometry("485x760")
 
         self.ib_conn = IBConnection()
         self.loop = asyncio.new_event_loop()
@@ -32,9 +32,16 @@ class TradingUI:
         self.status_label = ttk.Label(conn_frame, text="Not Connected", foreground="red")
         self.status_label.pack(side="left", padx=10)
 
+        # Trade Counter Frame
+        counter_frame = ttk.Frame(self.root, padding=5)
+        counter_frame.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="ew")
+
+        self.trade_counter_label = ttk.Label(counter_frame, text="Trades Today: -/-", font=("Arial", 10, "bold"))
+        self.trade_counter_label.pack()
+
         # Trading Frame
         trade_frame = ttk.LabelFrame(self.root, text="Trade ES Futures", padding=10)
-        trade_frame.grid(row=1, column=0, padx=10, pady=10, sticky="ew")
+        trade_frame.grid(row=2, column=0, padx=10, pady=10, sticky="ew")
 
         # Direction
         ttk.Label(trade_frame, text="Direction:").grid(row=0, column=0, sticky="w", pady=5)
@@ -87,27 +94,42 @@ class TradingUI:
 
         # Info Frame
         info_frame = ttk.LabelFrame(self.root, text="Trade Info", padding=10)
-        info_frame.grid(row=2, column=0, padx=10, pady=10, sticky="ew")
+        info_frame.grid(row=3, column=0, padx=10, pady=10, sticky="ew")
 
         self.info_text = tk.Text(info_frame, height=8, width=50, state="disabled")
         self.info_text.pack()
 
         # Close Position Frame
-        close_frame = ttk.LabelFrame(self.root, text="Close Position", padding=10)
-        close_frame.grid(row=3, column=0, padx=10, pady=10, sticky="ew")
+        close_frame = ttk.LabelFrame(self.root, text="Manage Position", padding=10)
+        close_frame.grid(row=4, column=0, padx=10, pady=10, sticky="ew")
 
-        button_frame = ttk.Frame(close_frame)
-        button_frame.pack()
+        # Close buttons
+        close_button_frame = ttk.Frame(close_frame)
+        close_button_frame.pack(pady=(0, 5))
 
         self.close_long_btn = ttk.Button(
-            button_frame, text="Close Long", command=self.close_long, state="disabled", width=15
+            close_button_frame, text="Close Long", command=self.close_long, state="disabled", width=15
         )
         self.close_long_btn.pack(side="left", padx=5)
 
         self.close_short_btn = ttk.Button(
-            button_frame, text="Close Short", command=self.close_short, state="disabled", width=15
+            close_button_frame, text="Close Short", command=self.close_short, state="disabled", width=15
         )
         self.close_short_btn.pack(side="left", padx=5)
+
+        # Re-open buttons
+        reopen_button_frame = ttk.Frame(close_frame)
+        reopen_button_frame.pack()
+
+        self.reopen_long_btn = ttk.Button(
+            reopen_button_frame, text="Re-open Long", command=self.reopen_long, state="disabled", width=15
+        )
+        self.reopen_long_btn.pack(side="left", padx=5)
+
+        self.reopen_short_btn = ttk.Button(
+            reopen_button_frame, text="Re-open Short", command=self.reopen_short, state="disabled", width=15
+        )
+        self.reopen_short_btn.pack(side="left", padx=5)
 
     def connect(self):
         host = "127.0.0.1"
@@ -135,24 +157,32 @@ class TradingUI:
         self.status_label.config(text=account_type, foreground="green")
         self.connect_btn.config(state="disabled")
         self.refresh_btn.config(state="normal")
-        self.execute_btn.config(state="normal")
+
+        # Update trade counter display and button state
+        self.update_trade_counter()
 
         # Show position sync info
         sync_result = self.loop.run_until_complete(self.ib_conn.sync_positions())
         if sync_result:
-            # Get average entry price if there's a position
-            avg_price = 0.0
+            # Get average entry prices
+            es_avg_price = 0.0
+            mes_avg_price = 0.0
+
             if self.ib_conn.current_quantity > 0:
-                avg_price = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price(force_refresh=True))
+                es_avg_price = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price(symbol="ES", force_refresh=True))
+
+            if self.ib_conn.mes_position != 0:
+                mes_avg_price = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price(symbol="MES", force_refresh=True))
 
             info = f"""
 Connected to IB!
 
 ES Position: {sync_result['es_position']}
-Average Entry Price: {f'{avg_price:.2f}' if avg_price > 0 else 'N/A'}
-MES Resting Orders: {sync_result['mes_orders']}
+ES Average Entry: {f'{es_avg_price:.2f}' if es_avg_price > 0 else 'N/A'}
 
-Status: {'LONG' if sync_result['active_long'] else 'SHORT' if sync_result['active_short'] else 'No Position'}
+MES Position: {self.ib_conn.mes_position}
+MES Average Entry: {f'{mes_avg_price:.2f}' if mes_avg_price > 0 else 'N/A'}
+MES Resting Orders: {sync_result['mes_orders']}
             """
             self.update_info(info)
 
@@ -169,19 +199,25 @@ Status: {'LONG' if sync_result['active_long'] else 'SHORT' if sync_result['activ
         # Show position sync info
         sync_result = self.loop.run_until_complete(self.ib_conn.sync_positions())
         if sync_result:
-            # Get average entry price if there's a position
-            avg_price = 0.0
+            # Get average entry prices
+            es_avg_price = 0.0
+            mes_avg_price = 0.0
+
             if self.ib_conn.current_quantity > 0:
-                avg_price = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price(force_refresh=True))
+                es_avg_price = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price(symbol="ES", force_refresh=True))
+
+            if self.ib_conn.mes_position != 0:
+                mes_avg_price = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price(symbol="MES", force_refresh=True))
 
             info = f"""
 Connected to IB!
 
 ES Position: {sync_result['es_position']}
-Average Entry Price: {f'{avg_price:.2f}' if avg_price > 0 else 'N/A'}
-MES Resting Orders: {sync_result['mes_orders']}
+ES Average Entry: {f'{es_avg_price:.2f}' if es_avg_price > 0 else 'N/A'}
 
-Status: {'LONG' if sync_result['active_long'] else 'SHORT' if sync_result['active_short'] else 'No Position'}
+MES Position: {self.ib_conn.mes_position}
+MES Average Entry: {f'{mes_avg_price:.2f}' if mes_avg_price > 0 else 'N/A'}
+MES Resting Orders: {sync_result['mes_orders']}
             """
             self.update_info(info)
 
@@ -252,6 +288,9 @@ MES hedge is resting from the start, protecting max position.
                 """
                 self.update_info(info)
 
+                # Update trade counter after successful trade
+                self.update_trade_counter()
+
                 # Force button update
                 self.root.update_idletasks()
                 self.update_close_buttons()
@@ -276,8 +315,26 @@ MES hedge is resting from the start, protecting max position.
         self.info_text.insert(1.0, text)
         self.info_text.config(state="disabled")
 
+    def update_trade_counter(self):
+        """Update trade counter label and execute button state"""
+        count = self.ib_conn.today_trade_count
+        max_count = self.ib_conn.max_trades_per_day
+        remaining = max_count - count
+
+        # Update label
+        if remaining > 0:
+            self.trade_counter_label.config(text=f"Trades Today: {count}/{max_count} ({remaining} remaining)", foreground="green")
+        else:
+            self.trade_counter_label.config(text=f"Trades Today: {count}/{max_count} (LIMIT REACHED)", foreground="red")
+
+        # Update execute button state
+        if self.ib_conn.connected and self.ib_conn.can_execute_trade():
+            self.execute_btn.config(state="normal")
+        else:
+            self.execute_btn.config(state="disabled")
+
     def update_close_buttons(self):
-        """Update close button states based on active positions"""
+        """Update close and re-open button states based on active positions"""
         # Close Long enabled if: ES LONG position OR MES LONG position
         has_long_side = self.ib_conn.active_long or self.ib_conn.mes_position > 0
         if has_long_side:
@@ -291,6 +348,24 @@ MES hedge is resting from the start, protecting max position.
             self.close_short_btn.config(state="normal")
         else:
             self.close_short_btn.config(state="disabled")
+
+        # Re-open Short enabled if: ES LONG exists AND (no MES position AND no MES resting orders)
+        # MES SHORT hedge shows as negative position or resting SELL orders
+        has_mes_short = self.ib_conn.mes_position < 0 or (self.ib_conn.active_long and self.ib_conn.has_hedge)
+        can_reopen_short = self.ib_conn.active_long and not has_mes_short
+        if can_reopen_short:
+            self.reopen_short_btn.config(state="normal")
+        else:
+            self.reopen_short_btn.config(state="disabled")
+
+        # Re-open Long enabled if: ES SHORT exists AND (no MES position AND no MES resting orders)
+        # MES LONG hedge shows as positive position or resting BUY orders
+        has_mes_long = self.ib_conn.mes_position > 0 or (self.ib_conn.active_short and self.ib_conn.has_hedge)
+        can_reopen_long = self.ib_conn.active_short and not has_mes_long
+        if can_reopen_long:
+            self.reopen_long_btn.config(state="normal")
+        else:
+            self.reopen_long_btn.config(state="disabled")
 
     def close_long(self):
         """Close long position"""
@@ -350,6 +425,124 @@ Position successfully closed.
         else:
             self.update_info(f"ERROR: {result['message']}\n")
             messagebox.showerror("Error", result["message"])
+            self.update_close_buttons()
+
+    def reopen_long(self):
+        """Re-open long hedge (MES LONG to hedge ES SHORT)"""
+        if not self.ib_conn.active_short:
+            messagebox.showerror("Error", "No ES SHORT position to hedge")
+            return
+
+        self.reopen_long_btn.config(state="disabled")
+        self.update_info("Re-opening long hedge...\n")
+
+        try:
+            # Get stop points and ES quantity
+            stop_points = float(self.stop_points_var.get())
+            es_qty = self.ib_conn.current_quantity
+
+            # Get ES average entry price
+            es_avg = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price(symbol="ES", force_refresh=True))
+
+            if es_avg == 0:
+                messagebox.showerror("Error", "Could not get ES average entry price")
+                self.update_close_buttons()
+                return
+
+            # Calculate MES stop price (LONG to hedge SHORT ES)
+            stop_price = es_avg + stop_points
+            stop_price = round(stop_price * 4) / 4
+            mes_quantity = es_qty * 10
+
+            # Get MES contract
+            if not self.ib_conn.mes_contract:
+                self.ib_conn.mes_contract = self.loop.run_until_complete(
+                    self.ib_conn.get_front_month_contract("MES")
+                )
+
+            # Place MES LONG stop order
+            print(f"Re-opening LONG hedge: BUY {mes_quantity} MES @ {stop_price}")
+            self.loop.run_until_complete(
+                self.ib_conn.place_stop_order(self.ib_conn.mes_contract, "BUY", mes_quantity, stop_price)
+            )
+            self.ib_conn.has_hedge = True
+
+            info = f"""
+Long Hedge Re-opened!
+
+ES Position: {es_qty} SHORT
+ES Average: {es_avg:.2f}
+
+MES Hedge: BUY {mes_quantity} @ {stop_price} (STOP)
+Stop Loss: {stop_points} points
+            """
+            self.update_info(info)
+
+            # Refresh positions
+            self.loop.run_until_complete(self.ib_conn.sync_positions())
+            self.update_close_buttons()
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to re-open hedge: {str(e)}")
+            self.update_close_buttons()
+
+    def reopen_short(self):
+        """Re-open short hedge (MES SHORT to hedge ES LONG)"""
+        if not self.ib_conn.active_long:
+            messagebox.showerror("Error", "No ES LONG position to hedge")
+            return
+
+        self.reopen_short_btn.config(state="disabled")
+        self.update_info("Re-opening short hedge...\n")
+
+        try:
+            # Get stop points and ES quantity
+            stop_points = float(self.stop_points_var.get())
+            es_qty = self.ib_conn.current_quantity
+
+            # Get ES average entry price
+            es_avg = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price(symbol="ES", force_refresh=True))
+
+            if es_avg == 0:
+                messagebox.showerror("Error", "Could not get ES average entry price")
+                self.update_close_buttons()
+                return
+
+            # Calculate MES stop price (SHORT to hedge LONG ES)
+            stop_price = es_avg - stop_points
+            stop_price = round(stop_price * 4) / 4
+            mes_quantity = es_qty * 10
+
+            # Get MES contract
+            if not self.ib_conn.mes_contract:
+                self.ib_conn.mes_contract = self.loop.run_until_complete(
+                    self.ib_conn.get_front_month_contract("MES")
+                )
+
+            # Place MES SHORT stop order
+            print(f"Re-opening SHORT hedge: SELL {mes_quantity} MES @ {stop_price}")
+            self.loop.run_until_complete(
+                self.ib_conn.place_stop_order(self.ib_conn.mes_contract, "SELL", mes_quantity, stop_price)
+            )
+            self.ib_conn.has_hedge = True
+
+            info = f"""
+Short Hedge Re-opened!
+
+ES Position: {es_qty} LONG
+ES Average: {es_avg:.2f}
+
+MES Hedge: SELL {mes_quantity} @ {stop_price} (STOP)
+Stop Loss: {stop_points} points
+            """
+            self.update_info(info)
+
+            # Refresh positions
+            self.loop.run_until_complete(self.ib_conn.sync_positions())
+            self.update_close_buttons()
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to re-open hedge: {str(e)}")
             self.update_close_buttons()
 
     def on_closing(self):

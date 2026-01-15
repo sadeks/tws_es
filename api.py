@@ -1,5 +1,8 @@
 from ib_async import IB, Future, MarketOrder, StopOrder, LimitOrder
 import asyncio
+import json
+import os
+from datetime import datetime
 
 
 class IBConnection:
@@ -19,6 +22,58 @@ class IBConnection:
         self.ladder_orders = []
         self.mes_hedge_placed = False
         self.mes_position = 0  # Track MES position (negative = short, positive = long)
+        self.has_hedge = False  # Track if there's a hedge (filled or resting)
+
+        # Trade counter
+        self.trade_counter_file = os.path.join(os.path.dirname(__file__), "trade_counter.json")
+        self.max_trades_per_day = 2
+        self.today_trade_count = 0
+
+    def load_trade_counter(self):
+        """Load trade counter from JSON file"""
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        # Create file if doesn't exist
+        if not os.path.exists(self.trade_counter_file):
+            data = {today: 0}
+            with open(self.trade_counter_file, "w") as f:
+                json.dump(data, f, indent=2)
+            self.today_trade_count = 0
+            print(f"Created trade counter file. Today ({today}): 0 trades")
+            return
+
+        # Load existing file
+        with open(self.trade_counter_file, "r") as f:
+            data = json.load(f)
+
+        # Check if today's date exists
+        if today not in data:
+            data[today] = 0
+            with open(self.trade_counter_file, "w") as f:
+                json.dump(data, f, indent=2)
+            print(f"New day detected. Reset counter for {today}")
+
+        self.today_trade_count = data[today]
+        print(f"Trade counter loaded. Today ({today}): {self.today_trade_count}/{self.max_trades_per_day} trades")
+
+    def increment_trade_counter(self):
+        """Increment today's trade count"""
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        with open(self.trade_counter_file, "r") as f:
+            data = json.load(f)
+
+        data[today] = data.get(today, 0) + 1
+        self.today_trade_count = data[today]
+
+        with open(self.trade_counter_file, "w") as f:
+            json.dump(data, f, indent=2)
+
+        print(f"Trade count incremented: {self.today_trade_count}/{self.max_trades_per_day}")
+
+    def can_execute_trade(self):
+        """Check if we can execute another trade today"""
+        return self.today_trade_count < self.max_trades_per_day
 
     async def connect(self, host="127.0.0.1", port=7497, client_id=1):
         """Connect to IB Gateway or TWS"""
@@ -26,6 +81,9 @@ class IBConnection:
             await self.ib.connectAsync(host, port, clientId=client_id)
             self.connected = True
             print(f"Connected to IB on {host}:{port}")
+
+            # Load trade counter for today
+            self.load_trade_counter()
 
             # Check for existing positions on connect
             await self.sync_positions()
@@ -176,7 +234,6 @@ class IBConnection:
         trade = self.ib.placeOrder(contract, order)
         return trade
 
-
     async def execute_trade_with_ladder(
         self, direction, entry_price, stop_points, quantity, ladder_interval, max_contracts
     ):
@@ -191,6 +248,13 @@ class IBConnection:
             ladder_interval: Points between each ladder level
             max_contracts: Maximum number of contracts to accumulate
         """
+        # Check trade limit
+        if not self.can_execute_trade():
+            return {
+                "success": False,
+                "message": f"Daily trade limit reached ({self.max_trades_per_day} trades). Cannot execute new trade."
+            }
+
         # Get front month contracts
         print("Finding front month contracts...")
         es = await self.get_front_month_contract("ES")
@@ -223,7 +287,9 @@ class IBConnection:
             if entry_price:
                 # Limit order - wait for fill to get actual entry price
                 print(f"Placing {es_action} limit order for {quantity} ES @ {entry_price}...")
-                es_trade, fill_price = await self.place_limit_order(es, es_action, quantity, entry_price, wait_for_fill=True)
+                es_trade, fill_price = await self.place_limit_order(
+                    es, es_action, quantity, entry_price, wait_for_fill=True
+                )
             else:
                 # Market order
                 print(f"Placing {es_action} market order for {quantity} ES...")
@@ -275,8 +341,12 @@ class IBConnection:
                 # Place ladder orders (don't wait for fills - these are resting orders)
                 for i, ladder_price in enumerate(ladder_prices, 1):
                     print(f"Placing ladder order {i}: {es_action} {quantity} ES @ {ladder_price}")
-                    ladder_trade, _ = await self.place_limit_order(es, es_action, quantity, ladder_price, wait_for_fill=False)
-                    self.ladder_orders.append({"trade": ladder_trade, "price": ladder_price, "action": es_action, "quantity": quantity})
+                    ladder_trade, _ = await self.place_limit_order(
+                        es, es_action, quantity, ladder_price, wait_for_fill=False
+                    )
+                    self.ladder_orders.append(
+                        {"trade": ladder_trade, "price": ladder_price, "action": es_action, "quantity": quantity}
+                    )
             else:
                 # Already at max, use current average
                 expected_avg = self.avg_entry_price
@@ -290,9 +360,15 @@ class IBConnection:
             stop_price = round(stop_price * 4) / 4
             mes_quantity = max_contracts * 10  # Hedge for full max contracts
 
-            print(f"Placing MES hedge upfront: {mes_action} {mes_quantity} @ {stop_price} (based on expected avg {expected_avg:.2f})")
-            mes_trade = await self.place_stop_order(mes, mes_action, mes_quantity, stop_price)
+            print(
+                f"Placing MES hedge upfront: {mes_action} {mes_quantity} @ {stop_price} (based on expected avg {expected_avg:.2f})"
+            )
+            await self.place_stop_order(mes, mes_action, mes_quantity, stop_price)
             self.mes_hedge_placed = True
+            self.has_hedge = True
+
+            # Increment trade counter after successful execution
+            self.increment_trade_counter()
 
             return {
                 "success": True,
@@ -300,7 +376,9 @@ class IBConnection:
                 "direction": direction,
                 "stop_points": stop_points,
                 "quantity": self.current_quantity,
-                "ladder_orders": [{"price": o["price"], "action": o["action"], "quantity": o["quantity"]} for o in self.ladder_orders],
+                "ladder_orders": [
+                    {"price": o["price"], "action": o["action"], "quantity": o["quantity"]} for o in self.ladder_orders
+                ],
                 "mes_stop": stop_price,
                 "mes_quantity": mes_quantity,
                 "expected_avg": expected_avg,
@@ -309,32 +387,42 @@ class IBConnection:
         except Exception as e:
             return {"success": False, "message": f"Error: {str(e)}"}
 
-    async def get_avg_entry_price(self, force_refresh=False):
-        """Get average entry price from ES position
+    async def get_avg_entry_price(self, symbol="ES", force_refresh=False):
+        """Get average entry price from position
 
         Args:
-            force_refresh: If True, always get fresh data from IBKR (ignore cached value)
+            symbol: 'ES' or 'MES'
+            force_refresh: If True, always get fresh data from IBKR (ignore cached value for ES)
         """
         try:
-            # If force_refresh is False and we have a stored value, use it
-            if not force_refresh and self.avg_entry_price > 0:
+            # If force_refresh is False and we have a stored ES value, use it
+            if symbol == "ES" and not force_refresh and self.avg_entry_price > 0:
                 return self.avg_entry_price
+
+            # Get multiplier based on symbol
+            multiplier = 50.0 if symbol == "ES" else 5.0
 
             # Get from IBKR position data (most accurate for existing positions)
             positions = self.ib.positions()
             for pos in positions:
-                if pos.contract.symbol == "ES" and pos.position != 0:
-                    # For ES futures, avgCost is total cost basis
-                    # Need to divide by multiplier (50 for ES) to get price per point
-                    avg_price = pos.avgCost / 50.0
-                    self.avg_entry_price = avg_price
-                    print(f"Average entry price from IBKR: {avg_price:.2f} (avgCost={pos.avgCost}, multiplier=50)")
+                if pos.contract.symbol == symbol and pos.position != 0:
+                    # For futures, avgCost is total cost basis
+                    # Need to divide by multiplier to get price per point
+                    avg_price = pos.avgCost / multiplier
+
+                    # Cache ES price
+                    if symbol == "ES":
+                        self.avg_entry_price = avg_price
+
+                    print(
+                        f"{symbol} Average entry price from IBKR: {avg_price:.2f} (avgCost={pos.avgCost}, multiplier={multiplier})"
+                    )
                     return avg_price
 
             return 0.0
 
         except Exception as e:
-            print(f"Error getting avg entry price: {e}")
+            print(f"Error getting {symbol} avg entry price: {e}")
             return 0.0
 
     def get_positions(self):
@@ -492,8 +580,10 @@ class IBConnection:
                 expected_hedge_position = expected_hedge_qty  # LONG MES to hedge SHORT ES
                 expected_hedge_action = "BUY"
 
-            print(f"\n*** HEDGE DETECTION ***")
-            print(f"ES Position: {self.current_quantity} {'LONG' if self.active_long else 'SHORT' if self.active_short else 'NONE'}")
+            print("*** HEDGE DETECTION ***")
+            print(
+                f"ES Position: {self.current_quantity} {'LONG' if self.active_long else 'SHORT' if self.active_short else 'NONE'}"
+            )
             print(f"Expected MES hedge position: {expected_hedge_position} (filled)")
             print(f"OR Expected MES resting order: {expected_hedge_action} {expected_hedge_qty} (stop order)")
 
@@ -528,29 +618,21 @@ class IBConnection:
                         order_type = trade.order.orderType
 
                         # Stop orders have auxPrice attribute
-                        is_stop_order = hasattr(trade.order, 'auxPrice') and trade.order.auxPrice is not None
+                        is_stop_order = hasattr(trade.order, "auxPrice") and trade.order.auxPrice is not None
 
                         print(
                             f"\n  MES Order #{mes_orders}: {order_type} {order_action} {order_qty} @ {trade.order.auxPrice if hasattr(trade.order, 'auxPrice') else trade.order.lmtPrice if hasattr(trade.order, 'lmtPrice') else 'Market'}"
                         )
 
-                        # Detailed comparison for debugging
-                        action_match = order_action == expected_hedge_action
-                        qty_match = int(order_qty) == int(expected_hedge_qty)
-
                         print(f"    Order Type: '{order_type}'")
                         print(f"    Is Stop Order: {is_stop_order}")
-                        print(f"    Action Match: {order_action} == {expected_hedge_action} ? {action_match}")
-                        print(f"    Qty Match: {int(order_qty)} == {int(expected_hedge_qty)} ? {qty_match}")
 
-                        # Check if this is our hedge (STOP order, opposite direction, matching quantity)
-                        if (expected_hedge_action and
-                            is_stop_order and
-                            action_match and
-                            qty_match):
+                        # If there's ANY MES stop order, consider it a hedge
+                        # (Don't check quantity - user may have scaled in/out)
+                        if is_stop_order:
                             has_hedge = True
                             self.mes_hedge_placed = True
-                            print(f"    🎯 ✓✓✓ RESTING HEDGE ORDER DETECTED FOR {self.current_quantity} ES CONTRACTS ✓✓✓ 🎯")
+                            print(f"    🎯 ✓✓✓ RESTING MES STOP ORDER DETECTED ✓✓✓ 🎯")
 
                         if not self.mes_contract:
                             self.mes_contract = trade.contract
@@ -560,6 +642,9 @@ class IBConnection:
             print(f"MES Resting Orders: {mes_orders}")
             print(f"Has matching hedge: {has_hedge}")
             print("=========================\n")
+
+            # Store has_hedge flag for button state management
+            self.has_hedge = has_hedge
 
             return {
                 "es_position": es_position,
