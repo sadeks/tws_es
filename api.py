@@ -12,7 +12,6 @@ class IBConnection:
         self.active_long = False
         self.active_short = False
         self.es_contract = None
-        self.mes_contract = None
         self.current_quantity = 0
         self.avg_entry_price = 0.0
         self.max_contracts = 0
@@ -20,9 +19,6 @@ class IBConnection:
         self.stop_points = 0
         self.direction = None
         self.ladder_orders = []
-        self.mes_hedge_placed = False
-        self.mes_position = 0  # Track MES position (negative = short, positive = long)
-        self.has_hedge = False  # Track if there's a hedge (filled or resting)
 
         # Trade counter
         self.trade_counter_file = os.path.join(os.path.dirname(__file__), "trade_counter.json")
@@ -160,19 +156,32 @@ class IBConnection:
         while not trade.isDone():
             await self.ib.updateEvent
 
-        # Give a moment for fill data to populate
-        await asyncio.sleep(0.5)
-
-        # Get actual fill price from fills
+        # Retry loop to get fill price (data may take time to populate)
         fill_price = 0.0
-        if trade.fills:
-            # Calculate average fill price from all fills
-            total_qty = sum(f.execution.shares for f in trade.fills)
-            weighted_price = sum(f.execution.avgPrice * f.execution.shares for f in trade.fills)
-            fill_price = weighted_price / total_qty if total_qty > 0 else 0.0
+        for attempt in range(5):
+            await asyncio.sleep(0.5)
 
-        if fill_price == 0.0 and trade.orderStatus.avgFillPrice:
-            fill_price = trade.orderStatus.avgFillPrice
+            # Try to get fill price from fills
+            if trade.fills:
+                total_qty = sum(f.execution.shares for f in trade.fills)
+                weighted_price = sum(f.execution.avgPrice * f.execution.shares for f in trade.fills)
+                fill_price = weighted_price / total_qty if total_qty > 0 else 0.0
+
+            # Fallback to orderStatus
+            if fill_price == 0.0 and trade.orderStatus.avgFillPrice:
+                fill_price = trade.orderStatus.avgFillPrice
+
+            if fill_price > 0.0:
+                break
+
+            print(f"Waiting for fill price (attempt {attempt + 1}/5)...")
+
+        # Last resort: get current market price
+        if fill_price == 0.0:
+            print("Fill price not available from order, fetching market price...")
+            market_price = await self.get_market_price(contract)
+            if market_price:
+                fill_price = market_price
 
         return trade, fill_price
 
@@ -198,19 +207,23 @@ class IBConnection:
         while not trade.isDone():
             await self.ib.updateEvent
 
-        # Give a moment for fill data to populate
-        await asyncio.sleep(0.5)
-
-        # Get actual fill price from fills
+        # Retry loop to get fill price (data may take time to populate)
         fill_price = 0.0
-        if trade.fills:
-            # Calculate average fill price from all fills
-            total_qty = sum(f.execution.shares for f in trade.fills)
-            weighted_price = sum(f.execution.avgPrice * f.execution.shares for f in trade.fills)
-            fill_price = weighted_price / total_qty if total_qty > 0 else 0.0
+        for attempt in range(3):
+            await asyncio.sleep(0.5)
 
-        if fill_price == 0.0 and trade.orderStatus.avgFillPrice:
-            fill_price = trade.orderStatus.avgFillPrice
+            # Try to get fill price from fills
+            if trade.fills:
+                total_qty = sum(f.execution.shares for f in trade.fills)
+                weighted_price = sum(f.execution.avgPrice * f.execution.shares for f in trade.fills)
+                fill_price = weighted_price / total_qty if total_qty > 0 else 0.0
+
+            # Fallback to orderStatus
+            if fill_price == 0.0 and trade.orderStatus.avgFillPrice:
+                fill_price = trade.orderStatus.avgFillPrice
+
+            if fill_price > 0.0:
+                break
 
         # Fallback: if still 0, use limit price (order was filled at limit)
         if fill_price == 0.0:
@@ -219,7 +232,7 @@ class IBConnection:
         return trade, fill_price
 
     async def place_stop_order(self, contract, action, quantity, stop_price, parent_order_id=None):
-        """Place stop order for MES hedge"""
+        """Place stop order"""
         # Qualify contract to ensure it's properly set up for trading
         qualified = await self.ib.qualifyContractsAsync(contract)
         if qualified:
@@ -243,7 +256,7 @@ class IBConnection:
         Args:
             direction: 'LONG' or 'SHORT'
             entry_price: Entry price for ES (can be None for market order)
-            stop_points: Stop loss in points (only applied when max contracts reached)
+            stop_points: Stop loss in points
             quantity: Number of ES contracts for initial trade
             ladder_interval: Points between each ladder level
             max_contracts: Maximum number of contracts to accumulate
@@ -255,16 +268,14 @@ class IBConnection:
                 "message": f"Daily trade limit reached ({self.max_trades_per_day} trades). Cannot execute new trade."
             }
 
-        # Get front month contracts
-        print("Finding front month contracts...")
+        # Get front month ES contract
+        print("Finding front month ES contract...")
         es = await self.get_front_month_contract("ES")
-        mes = await self.get_front_month_contract("MES")
 
-        if not es or not mes:
-            return {"success": False, "message": "Failed to get front month contracts"}
+        if not es:
+            return {"success": False, "message": "Failed to get front month ES contract"}
 
         print(f"ES Contract: {es.localSymbol} (Exp: {es.lastTradeDateOrContractMonth})")
-        print(f"MES Contract: {mes.localSymbol} (Exp: {mes.lastTradeDateOrContractMonth})")
 
         # Store ladder configuration
         self.max_contracts = max_contracts
@@ -272,28 +283,22 @@ class IBConnection:
         self.stop_points = stop_points
         self.direction = direction
         self.es_contract = es
-        self.mes_contract = mes
 
         # Determine actions
-        if direction == "LONG":
-            es_action = "BUY"
-            mes_action = "SELL"
-        else:  # SHORT
-            es_action = "SELL"
-            mes_action = "BUY"
+        es_action = "BUY" if direction == "LONG" else "SELL"
 
         try:
             # Place initial ES order (limit or market based on entry_price)
             if entry_price:
                 # Limit order - wait for fill to get actual entry price
                 print(f"Placing {es_action} limit order for {quantity} ES @ {entry_price}...")
-                es_trade, fill_price = await self.place_limit_order(
+                _, fill_price = await self.place_limit_order(
                     es, es_action, quantity, entry_price, wait_for_fill=True
                 )
             else:
                 # Market order
                 print(f"Placing {es_action} market order for {quantity} ES...")
-                es_trade, fill_price = await self.place_market_order(es, es_action, quantity)
+                _, fill_price = await self.place_market_order(es, es_action, quantity)
 
             if fill_price == 0.0:
                 return {"success": False, "message": "Order filled but could not get fill price"}
@@ -351,21 +356,22 @@ class IBConnection:
                 # Already at max, use current average
                 expected_avg = self.avg_entry_price
 
-            # ALWAYS place MES hedge upfront (based on expected average)
+            # Calculate stop price based on expected average
             if direction == "LONG":
                 stop_price = expected_avg - stop_points
             else:
                 stop_price = expected_avg + stop_points
 
             stop_price = round(stop_price * 4) / 4
-            mes_quantity = max_contracts * 10  # Hedge for full max contracts
+
+            # Place ES stop loss to exit entire position
+            es_stop_action = "SELL" if direction == "LONG" else "BUY"
+            es_stop_quantity = max_contracts
 
             print(
-                f"Placing MES hedge upfront: {mes_action} {mes_quantity} @ {stop_price} (based on expected avg {expected_avg:.2f})"
+                f"Placing ES stop loss: {es_stop_action} {es_stop_quantity} @ {stop_price} (based on expected avg {expected_avg:.2f})"
             )
-            await self.place_stop_order(mes, mes_action, mes_quantity, stop_price)
-            self.mes_hedge_placed = True
-            self.has_hedge = True
+            await self.place_stop_order(es, es_stop_action, es_stop_quantity, stop_price)
 
             # Increment trade counter after successful execution
             self.increment_trade_counter()
@@ -379,50 +385,43 @@ class IBConnection:
                 "ladder_orders": [
                     {"price": o["price"], "action": o["action"], "quantity": o["quantity"]} for o in self.ladder_orders
                 ],
-                "mes_stop": stop_price,
-                "mes_quantity": mes_quantity,
+                "es_stop": stop_price,
+                "es_stop_quantity": es_stop_quantity,
                 "expected_avg": expected_avg,
             }
 
         except Exception as e:
             return {"success": False, "message": f"Error: {str(e)}"}
 
-    async def get_avg_entry_price(self, symbol="ES", force_refresh=False):
-        """Get average entry price from position
+    async def get_avg_entry_price(self, force_refresh=False):
+        """Get average entry price from ES position
 
         Args:
-            symbol: 'ES' or 'MES'
-            force_refresh: If True, always get fresh data from IBKR (ignore cached value for ES)
+            force_refresh: If True, always get fresh data from IBKR (ignore cached value)
         """
         try:
-            # If force_refresh is False and we have a stored ES value, use it
-            if symbol == "ES" and not force_refresh and self.avg_entry_price > 0:
+            # If force_refresh is False and we have a stored value, use it
+            if not force_refresh and self.avg_entry_price > 0:
                 return self.avg_entry_price
-
-            # Get multiplier based on symbol
-            multiplier = 50.0 if symbol == "ES" else 5.0
 
             # Get from IBKR position data (most accurate for existing positions)
             positions = self.ib.positions()
             for pos in positions:
-                if pos.contract.symbol == symbol and pos.position != 0:
+                if pos.contract.symbol == "ES" and pos.position != 0:
                     # For futures, avgCost is total cost basis
                     # Need to divide by multiplier to get price per point
-                    avg_price = pos.avgCost / multiplier
-
-                    # Cache ES price
-                    if symbol == "ES":
-                        self.avg_entry_price = avg_price
+                    avg_price = pos.avgCost / 50.0
+                    self.avg_entry_price = avg_price
 
                     print(
-                        f"{symbol} Average entry price from IBKR: {avg_price:.2f} (avgCost={pos.avgCost}, multiplier={multiplier})"
+                        f"ES Average entry price from IBKR: {avg_price:.2f} (avgCost={pos.avgCost})"
                     )
                     return avg_price
 
             return 0.0
 
         except Exception as e:
-            print(f"Error getting {symbol} avg entry price: {e}")
+            print(f"Error getting ES avg entry price: {e}")
             return 0.0
 
     def get_positions(self):
@@ -433,27 +432,22 @@ class IBConnection:
         """Get open orders"""
         return self.ib.openOrders()
 
-    async def close_position(self, direction):
+    async def flatten_position(self):
         """
-        Close positions for the specified direction
-
-        Args:
-            direction: 'LONG' or 'SHORT' - the side to close
-            - LONG: closes ES LONG and/or MES LONG positions
-            - SHORT: closes ES SHORT and/or MES SHORT positions
+        Flatten all ES positions and cancel all resting orders
         """
         try:
             closed_contracts = []
             fill_prices = []
 
-            print(f"\n=== Closing {direction} positions ===")
+            print("\n=== Flattening Position ===")
             print(f"active_long: {self.active_long}, active_short: {self.active_short}")
-            print(f"current_quantity: {self.current_quantity}, mes_position: {self.mes_position}")
+            print(f"current_quantity: {self.current_quantity}")
 
             # Close ES LONG position
-            if direction == "LONG" and self.active_long and self.current_quantity > 0:
+            if self.active_long and self.current_quantity > 0:
                 print(f"Closing LONG ES position - SELL {self.current_quantity} ES...")
-                es_trade, fill_price = await self.place_market_order(self.es_contract, "SELL", self.current_quantity)
+                _, fill_price = await self.place_market_order(self.es_contract, "SELL", self.current_quantity)
                 if fill_price > 0:
                     closed_contracts.append(f"{self.current_quantity} ES LONG @ {fill_price:.2f}")
                     fill_prices.append(fill_price)
@@ -463,9 +457,9 @@ class IBConnection:
                 self.avg_entry_price = 0.0
 
             # Close ES SHORT position
-            if direction == "SHORT" and self.active_short and self.current_quantity > 0:
+            elif self.active_short and self.current_quantity > 0:
                 print(f"Closing SHORT ES position - BUY {self.current_quantity} ES...")
-                es_trade, fill_price = await self.place_market_order(self.es_contract, "BUY", self.current_quantity)
+                _, fill_price = await self.place_market_order(self.es_contract, "BUY", self.current_quantity)
                 if fill_price > 0:
                     closed_contracts.append(f"{self.current_quantity} ES SHORT @ {fill_price:.2f}")
                     fill_prices.append(fill_price)
@@ -474,59 +468,35 @@ class IBConnection:
                 self.current_quantity = 0
                 self.avg_entry_price = 0.0
 
-            # Close MES LONG position
-            if direction == "LONG" and self.mes_position > 0:
-                mes_qty = abs(self.mes_position)
-                print(f"Closing LONG MES position - SELL {mes_qty} MES...")
-                mes_trade, fill_price = await self.place_market_order(self.mes_contract, "SELL", mes_qty)
-                if fill_price > 0:
-                    closed_contracts.append(f"{mes_qty} MES LONG @ {fill_price:.2f}")
-                    fill_prices.append(fill_price)
-                    print(f"MES closed at {fill_price}")
-                self.mes_position = 0
-
-            # Close MES SHORT position
-            if direction == "SHORT" and self.mes_position < 0:
-                mes_qty = abs(self.mes_position)
-                print(f"Closing SHORT MES position - BUY {mes_qty} MES...")
-                mes_trade, fill_price = await self.place_market_order(self.mes_contract, "BUY", mes_qty)
-                if fill_price > 0:
-                    closed_contracts.append(f"{mes_qty} MES SHORT @ {fill_price:.2f}")
-                    fill_prices.append(fill_price)
-                    print(f"MES closed at {fill_price}")
-                self.mes_position = 0
-
             print(f"Closed contracts: {closed_contracts}")
 
-            # Cancel all open orders (ladder orders + MES stops)
+            # Cancel all open ES orders (ladder orders + stops)
             open_orders = self.ib.openTrades()
             cancelled_count = 0
             for trade in open_orders:
-                if (trade.contract.symbol in ["ES", "MES"]) and not trade.isDone():
+                if trade.contract.symbol == "ES" and not trade.isDone():
                     self.ib.cancelOrder(trade.order)
                     cancelled_count += 1
-                    print(f"Cancelled {trade.contract.symbol} order")
+                    print("Cancelled ES order")
 
             # Reset position tracking
             self.ladder_orders = []
             self.direction = None
-            self.mes_hedge_placed = False
 
-            if not closed_contracts:
-                return {"success": False, "message": f"No {direction} positions found to close"}
+            if not closed_contracts and cancelled_count == 0:
+                return {"success": False, "message": "No positions or orders to flatten"}
 
             avg_fill = sum(fill_prices) / len(fill_prices) if fill_prices else 0
 
             return {
                 "success": True,
                 "close_price": avg_fill,
-                "direction": direction,
                 "cancelled_orders": cancelled_count,
                 "closed_contracts": closed_contracts,
             }
 
         except Exception as e:
-            return {"success": False, "message": f"Error closing position: {str(e)}"}
+            return {"success": False, "message": f"Error flattening position: {str(e)}"}
 
     async def sync_positions(self):
         """Sync position state from IB account"""
@@ -535,7 +505,6 @@ class IBConnection:
             await asyncio.sleep(1)
 
             positions = self.ib.positions()
-            open_orders = self.ib.openTrades()
 
             print("\n=== Syncing Positions ===")
 
@@ -549,7 +518,7 @@ class IBConnection:
                         self.es_contract = pos.contract
                     break
 
-            # Determine active positions first (needed for hedge check)
+            # Determine active positions
             if es_position > 0:
                 self.active_long = True
                 self.active_short = False
@@ -566,90 +535,10 @@ class IBConnection:
                 self.current_quantity = 0
                 print("Status: No ES position")
 
-            # Check MES hedge - FIRST check filled positions, THEN check resting orders
-            mes_orders = 0
-            has_hedge = False
-            expected_hedge_position = 0  # Expected MES position (negative for LONG ES, positive for SHORT ES)
-            expected_hedge_action = None
-            expected_hedge_qty = self.current_quantity * 10
-
-            if self.active_long:
-                expected_hedge_position = -expected_hedge_qty  # SHORT MES to hedge LONG ES
-                expected_hedge_action = "SELL"
-            elif self.active_short:
-                expected_hedge_position = expected_hedge_qty  # LONG MES to hedge SHORT ES
-                expected_hedge_action = "BUY"
-
-            print("*** HEDGE DETECTION ***")
-            print(
-                f"ES Position: {self.current_quantity} {'LONG' if self.active_long else 'SHORT' if self.active_short else 'NONE'}"
-            )
-            print(f"Expected MES hedge position: {expected_hedge_position} (filled)")
-            print(f"OR Expected MES resting order: {expected_hedge_action} {expected_hedge_qty} (stop order)")
-
-            # STEP 1: Check for filled MES position (hedge already triggered)
-            print("\nStep 1: Checking filled MES positions...")
-            mes_position = 0
-            self.mes_position = 0  # Reset to 0 first
-            for pos in positions:
-                if pos.contract.symbol == "MES":
-                    mes_position = pos.position
-                    self.mes_position = mes_position  # Store MES position for UI
-                    print(f"  Found MES position: {mes_position}")
-                    if not self.mes_contract:
-                        self.mes_contract = pos.contract
-                    break
-
-            if mes_position != 0 and mes_position == expected_hedge_position:
-                has_hedge = True
-                self.mes_hedge_placed = True
-                print(f"  🎯 ✓✓✓ FILLED HEDGE POSITION DETECTED: {mes_position} MES ✓✓✓ 🎯")
-
-            # STEP 2: If no filled position, check for resting stop orders
-            if not has_hedge:
-                print("\nStep 2: No filled hedge position. Checking resting stop orders...")
-                print(f"Total open orders to check: {len(open_orders)}")
-
-                for trade in open_orders:
-                    if trade.contract.symbol == "MES" and not trade.isDone():
-                        mes_orders += 1
-                        order_action = trade.order.action
-                        order_qty = trade.order.totalQuantity
-                        order_type = trade.order.orderType
-
-                        # Stop orders have auxPrice attribute
-                        is_stop_order = hasattr(trade.order, "auxPrice") and trade.order.auxPrice is not None
-
-                        print(
-                            f"\n  MES Order #{mes_orders}: {order_type} {order_action} {order_qty} @ {trade.order.auxPrice if hasattr(trade.order, 'auxPrice') else trade.order.lmtPrice if hasattr(trade.order, 'lmtPrice') else 'Market'}"
-                        )
-
-                        print(f"    Order Type: '{order_type}'")
-                        print(f"    Is Stop Order: {is_stop_order}")
-
-                        # If there's ANY MES stop order, consider it a hedge
-                        # (Don't check quantity - user may have scaled in/out)
-                        if is_stop_order:
-                            has_hedge = True
-                            self.mes_hedge_placed = True
-                            print(f"    🎯 ✓✓✓ RESTING MES STOP ORDER DETECTED ✓✓✓ 🎯")
-
-                        if not self.mes_contract:
-                            self.mes_contract = trade.contract
-
-            print(f"\n*** HEDGE DETECTION RESULT: {has_hedge} ***\n")
-
-            print(f"MES Resting Orders: {mes_orders}")
-            print(f"Has matching hedge: {has_hedge}")
             print("=========================\n")
-
-            # Store has_hedge flag for button state management
-            self.has_hedge = has_hedge
 
             return {
                 "es_position": es_position,
-                "mes_orders": mes_orders,
-                "has_hedge": has_hedge,
                 "active_long": self.active_long,
                 "active_short": self.active_short,
             }
