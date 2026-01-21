@@ -6,12 +6,21 @@ from datetime import datetime
 
 
 class IBConnection:
+    # Multipliers for each futures contract
+    MULTIPLIERS = {
+        "ES": 50.0,
+        "MES": 5.0,
+        "NQ": 20.0,
+        "MNQ": 2.0,
+    }
+
     def __init__(self):
         self.ib = IB()
         self.connected = False
         self.active_long = False
         self.active_short = False
-        self.es_contract = None
+        self.active_symbol = None  # Track which symbol has active position
+        self.contract = None  # Current contract
         self.current_quantity = 0
         self.avg_entry_price = 0.0
         self.max_contracts = 0
@@ -22,7 +31,7 @@ class IBConnection:
 
         # Trade counter
         self.trade_counter_file = os.path.join(os.path.dirname(__file__), "trade_counter.json")
-        self.max_trades_per_day = 2
+        self.max_trades_per_day = 200
         self.today_trade_count = 0
 
     def load_trade_counter(self):
@@ -248,16 +257,17 @@ class IBConnection:
         return trade
 
     async def execute_trade_with_ladder(
-        self, direction, entry_price, stop_points, quantity, ladder_interval, max_contracts
+        self, symbol, direction, entry_price, stop_points, quantity, ladder_interval, max_contracts
     ):
         """
-        Execute ES trade with ladder system
+        Execute futures trade with ladder system
 
         Args:
+            symbol: 'ES', 'MES', 'NQ', or 'MNQ'
             direction: 'LONG' or 'SHORT'
-            entry_price: Entry price for ES (can be None for market order)
+            entry_price: Entry price (can be None for market order)
             stop_points: Stop loss in points
-            quantity: Number of ES contracts for initial trade
+            quantity: Number of contracts for initial trade
             ladder_interval: Points between each ladder level
             max_contracts: Maximum number of contracts to accumulate
         """
@@ -265,45 +275,44 @@ class IBConnection:
         if not self.can_execute_trade():
             return {
                 "success": False,
-                "message": f"Daily trade limit reached ({self.max_trades_per_day} trades). Cannot execute new trade."
+                "message": f"Daily trade limit reached ({self.max_trades_per_day} trades). Cannot execute new trade.",
             }
 
-        # Get front month ES contract
-        print("Finding front month ES contract...")
-        es = await self.get_front_month_contract("ES")
+        # Get front month contract
+        print(f"Finding front month {symbol} contract...")
+        contract = await self.get_front_month_contract(symbol)
 
-        if not es:
-            return {"success": False, "message": "Failed to get front month ES contract"}
+        if not contract:
+            return {"success": False, "message": f"Failed to get front month {symbol} contract"}
 
-        print(f"ES Contract: {es.localSymbol} (Exp: {es.lastTradeDateOrContractMonth})")
+        print(f"{symbol} Contract: {contract.localSymbol} (Exp: {contract.lastTradeDateOrContractMonth})")
 
         # Store ladder configuration
         self.max_contracts = max_contracts
         self.ladder_interval = ladder_interval
         self.stop_points = stop_points
         self.direction = direction
-        self.es_contract = es
+        self.contract = contract
+        self.active_symbol = symbol
 
         # Determine actions
-        es_action = "BUY" if direction == "LONG" else "SELL"
+        action = "BUY" if direction == "LONG" else "SELL"
 
         try:
-            # Place initial ES order (limit or market based on entry_price)
+            # Place initial order (limit or market based on entry_price)
             if entry_price:
-                # Limit order - wait for fill to get actual entry price
-                print(f"Placing {es_action} limit order for {quantity} ES @ {entry_price}...")
+                print(f"Placing {action} limit order for {quantity} {symbol} @ {entry_price}...")
                 _, fill_price = await self.place_limit_order(
-                    es, es_action, quantity, entry_price, wait_for_fill=True
+                    contract, action, quantity, entry_price, wait_for_fill=True
                 )
             else:
-                # Market order
-                print(f"Placing {es_action} market order for {quantity} ES...")
-                _, fill_price = await self.place_market_order(es, es_action, quantity)
+                print(f"Placing {action} market order for {quantity} {symbol}...")
+                _, fill_price = await self.place_market_order(contract, action, quantity)
 
             if fill_price == 0.0:
                 return {"success": False, "message": "Order filled but could not get fill price"}
 
-            print(f"ES filled at {fill_price}")
+            print(f"{symbol} filled at {fill_price}")
 
             # Initialize position tracking
             self.current_quantity = quantity
@@ -321,10 +330,8 @@ class IBConnection:
 
             if self.current_quantity < max_contracts:
                 remaining_contracts = max_contracts - self.current_quantity
-                # Number of ladder steps (each step adds 'quantity' contracts)
                 num_ladder_steps = remaining_contracts // quantity
 
-                # Calculate all ladder prices first
                 for i in range(1, num_ladder_steps + 1):
                     if direction == "LONG":
                         ladder_price = fill_price - (i * ladder_interval)
@@ -334,26 +341,25 @@ class IBConnection:
                     ladder_prices.append(ladder_price)
 
                 # Calculate expected average if all fill
-                total_cost = fill_price * quantity  # Initial fill
+                total_cost = fill_price * quantity
                 total_qty = quantity
                 for ladder_price in ladder_prices:
-                    total_cost += ladder_price * quantity  # Each ladder adds 'quantity' contracts
+                    total_cost += ladder_price * quantity
                     total_qty += quantity
 
                 expected_avg = total_cost / total_qty
                 print(f"Expected average if all ladders fill: {expected_avg:.2f}")
 
-                # Place ladder orders (don't wait for fills - these are resting orders)
+                # Place ladder orders
                 for i, ladder_price in enumerate(ladder_prices, 1):
-                    print(f"Placing ladder order {i}: {es_action} {quantity} ES @ {ladder_price}")
+                    print(f"Placing ladder order {i}: {action} {quantity} {symbol} @ {ladder_price}")
                     ladder_trade, _ = await self.place_limit_order(
-                        es, es_action, quantity, ladder_price, wait_for_fill=False
+                        contract, action, quantity, ladder_price, wait_for_fill=False
                     )
                     self.ladder_orders.append(
-                        {"trade": ladder_trade, "price": ladder_price, "action": es_action, "quantity": quantity}
+                        {"trade": ladder_trade, "price": ladder_price, "action": action, "quantity": quantity}
                     )
             else:
-                # Already at max, use current average
                 expected_avg = self.avg_entry_price
 
             # Calculate stop price based on expected average
@@ -364,64 +370,64 @@ class IBConnection:
 
             stop_price = round(stop_price * 4) / 4
 
-            # Place ES stop loss to exit entire position
-            es_stop_action = "SELL" if direction == "LONG" else "BUY"
-            es_stop_quantity = max_contracts
+            # Place stop loss to exit entire position
+            stop_action = "SELL" if direction == "LONG" else "BUY"
 
             print(
-                f"Placing ES stop loss: {es_stop_action} {es_stop_quantity} @ {stop_price} (based on expected avg {expected_avg:.2f})"
+                f"Placing {symbol} stop loss: {stop_action} {max_contracts} @ {stop_price} (based on expected avg {expected_avg:.2f})"
             )
-            await self.place_stop_order(es, es_stop_action, es_stop_quantity, stop_price)
+            await self.place_stop_order(contract, stop_action, max_contracts, stop_price)
 
             # Increment trade counter after successful execution
             self.increment_trade_counter()
 
             return {
                 "success": True,
-                "es_fill": fill_price,
+                "symbol": symbol,
+                "fill_price": fill_price,
                 "direction": direction,
                 "stop_points": stop_points,
                 "quantity": self.current_quantity,
                 "ladder_orders": [
                     {"price": o["price"], "action": o["action"], "quantity": o["quantity"]} for o in self.ladder_orders
                 ],
-                "es_stop": stop_price,
-                "es_stop_quantity": es_stop_quantity,
+                "stop_price": stop_price,
+                "stop_quantity": max_contracts,
                 "expected_avg": expected_avg,
             }
 
         except Exception as e:
             return {"success": False, "message": f"Error: {str(e)}"}
 
-    async def get_avg_entry_price(self, force_refresh=False):
-        """Get average entry price from ES position
+    async def get_avg_entry_price(self, symbol, force_refresh=False):
+        """Get average entry price from position
 
         Args:
+            symbol: 'ES', 'MES', 'NQ', or 'MNQ'
             force_refresh: If True, always get fresh data from IBKR (ignore cached value)
         """
         try:
-            # If force_refresh is False and we have a stored value, use it
-            if not force_refresh and self.avg_entry_price > 0:
+            # If force_refresh is False and we have a stored value for active symbol, use it
+            if not force_refresh and symbol == self.active_symbol and self.avg_entry_price > 0:
                 return self.avg_entry_price
 
-            # Get from IBKR position data (most accurate for existing positions)
+            multiplier = self.MULTIPLIERS.get(symbol, 50.0)
+
+            # Get from IBKR position data
             positions = self.ib.positions()
             for pos in positions:
-                if pos.contract.symbol == "ES" and pos.position != 0:
-                    # For futures, avgCost is total cost basis
-                    # Need to divide by multiplier to get price per point
-                    avg_price = pos.avgCost / 50.0
-                    self.avg_entry_price = avg_price
+                if pos.contract.symbol == symbol and pos.position != 0:
+                    avg_price = pos.avgCost / multiplier
+                    if symbol == self.active_symbol:
+                        self.avg_entry_price = avg_price
 
-                    print(
-                        f"ES Average entry price from IBKR: {avg_price:.2f} (avgCost={pos.avgCost})"
-                    )
+                    print(f"{symbol} Average entry price from IBKR: {avg_price:.2f} (avgCost={pos.avgCost})")
                     return avg_price
 
             return 0.0
 
         except Exception as e:
-            print(f"Error getting ES avg entry price: {e}")
+            print(f"Error getting {symbol} avg entry price: {e}")
             return 0.0
 
     def get_positions(self):
@@ -432,59 +438,84 @@ class IBConnection:
         """Get open orders"""
         return self.ib.openOrders()
 
-    async def flatten_position(self):
+    async def flatten_position(self, symbol):
         """
-        Flatten all ES positions and cancel all resting orders
+        Flatten position for given symbol and cancel all resting orders
+
+        Args:
+            symbol: 'ES', 'MES', 'NQ', or 'MNQ'
         """
         try:
             closed_contracts = []
             fill_prices = []
 
-            print("\n=== Flattening Position ===")
-            print(f"active_long: {self.active_long}, active_short: {self.active_short}")
-            print(f"current_quantity: {self.current_quantity}")
+            print(f"\n=== Flattening {symbol} Position ===")
 
-            # Close ES LONG position
-            if self.active_long and self.current_quantity > 0:
-                print(f"Closing LONG ES position - SELL {self.current_quantity} ES...")
-                _, fill_price = await self.place_market_order(self.es_contract, "SELL", self.current_quantity)
-                if fill_price > 0:
-                    closed_contracts.append(f"{self.current_quantity} ES LONG @ {fill_price:.2f}")
-                    fill_prices.append(fill_price)
-                    print(f"ES closed at {fill_price}")
-                self.active_long = False
-                self.current_quantity = 0
-                self.avg_entry_price = 0.0
+            # Get positions from IBKR
+            positions = self.ib.positions()
+            position_qty = 0
+            position_contract = None
 
-            # Close ES SHORT position
-            elif self.active_short and self.current_quantity > 0:
-                print(f"Closing SHORT ES position - BUY {self.current_quantity} ES...")
-                _, fill_price = await self.place_market_order(self.es_contract, "BUY", self.current_quantity)
-                if fill_price > 0:
-                    closed_contracts.append(f"{self.current_quantity} ES SHORT @ {fill_price:.2f}")
-                    fill_prices.append(fill_price)
-                    print(f"ES closed at {fill_price}")
-                self.active_short = False
-                self.current_quantity = 0
-                self.avg_entry_price = 0.0
+            print(f"Checking {len(positions)} positions...")
+            for pos in positions:
+                print(f"  {pos.contract.symbol}: {pos.position} (type: {type(pos.position).__name__})")
+                if pos.contract.symbol == symbol:
+                    # Sum up all positions for this symbol (in case of multiple entries)
+                    position_qty += int(pos.position)
+                    if not position_contract:
+                        position_contract = pos.contract
+
+            print(f"Total {symbol} position to flatten: {position_qty}")
+
+            # Get contract if we don't have one from positions
+            if not position_contract:
+                position_contract = await self.get_front_month_contract(symbol)
+
+            # Close position if exists
+            if position_qty != 0 and position_contract:
+                if position_qty > 0:
+                    # Long position - sell to close
+                    print(f"Closing LONG {symbol} position - SELL {position_qty}...")
+                    _, fill_price = await self.place_market_order(position_contract, "SELL", position_qty)
+                    if fill_price > 0:
+                        closed_contracts.append(f"{position_qty} {symbol} LONG @ {fill_price:.2f}")
+                        fill_prices.append(fill_price)
+                        print(f"{symbol} closed at {fill_price}")
+                else:
+                    # Short position - buy to close
+                    qty = abs(position_qty)
+                    print(f"Closing SHORT {symbol} position - BUY {qty}...")
+                    _, fill_price = await self.place_market_order(position_contract, "BUY", qty)
+                    if fill_price > 0:
+                        closed_contracts.append(f"{qty} {symbol} SHORT @ {fill_price:.2f}")
+                        fill_prices.append(fill_price)
+                        print(f"{symbol} closed at {fill_price}")
+
+                # Reset tracking if this was the active symbol
+                if self.active_symbol == symbol:
+                    self.active_long = False
+                    self.active_short = False
+                    self.current_quantity = 0
+                    self.avg_entry_price = 0.0
+                    self.active_symbol = None
 
             print(f"Closed contracts: {closed_contracts}")
 
-            # Cancel all open ES orders (ladder orders + stops)
+            # Cancel all open orders for this symbol
             open_orders = self.ib.openTrades()
             cancelled_count = 0
             for trade in open_orders:
-                if trade.contract.symbol == "ES" and not trade.isDone():
+                if trade.contract.symbol == symbol and not trade.isDone():
                     self.ib.cancelOrder(trade.order)
                     cancelled_count += 1
-                    print("Cancelled ES order")
+                    print(f"Cancelled {symbol} order")
 
             # Reset position tracking
             self.ladder_orders = []
             self.direction = None
 
             if not closed_contracts and cancelled_count == 0:
-                return {"success": False, "message": "No positions or orders to flatten"}
+                return {"success": False, "message": f"No {symbol} positions or orders to flatten"}
 
             avg_fill = sum(fill_prices) / len(fill_prices) if fill_prices else 0
 
@@ -499,7 +530,7 @@ class IBConnection:
             return {"success": False, "message": f"Error flattening position: {str(e)}"}
 
     async def sync_positions(self):
-        """Sync position state from IB account"""
+        """Sync position state from IB account for all supported symbols"""
         try:
             # Wait a moment for position data to load
             await asyncio.sleep(1)
@@ -508,39 +539,53 @@ class IBConnection:
 
             print("\n=== Syncing Positions ===")
 
-            # Check ES positions
-            es_position = 0
-            for pos in positions:
-                if pos.contract.symbol == "ES":
-                    es_position = pos.position
-                    print(f"ES Position: {es_position}")
-                    if not self.es_contract:
-                        self.es_contract = pos.contract
+            # Check all supported symbols
+            symbols = ["ES", "MES", "NQ", "MNQ"]
+            position_data = {}
+
+            for symbol in symbols:
+                position_data[symbol] = 0
+                for pos in positions:
+                    if pos.contract.symbol == symbol:
+                        position_data[symbol] = int(pos.position)
+                        print(f"{symbol} Position: {pos.position}")
+                        # Store contract if it's the active symbol
+                        if pos.position != 0 and not self.contract:
+                            self.contract = pos.contract
+                            self.active_symbol = symbol
+                        break
+
+            # Determine active position (first non-zero position found)
+            self.active_long = False
+            self.active_short = False
+            self.current_quantity = 0
+
+            for symbol in symbols:
+                pos = position_data[symbol]
+                if pos > 0:
+                    self.active_long = True
+                    self.current_quantity = abs(pos)
+                    self.active_symbol = symbol
+                    print(f"Status: LONG {symbol} position detected")
+                    break
+                elif pos < 0:
+                    self.active_short = True
+                    self.current_quantity = abs(pos)
+                    self.active_symbol = symbol
+                    print(f"Status: SHORT {symbol} position detected")
                     break
 
-            # Determine active positions
-            if es_position > 0:
-                self.active_long = True
-                self.active_short = False
-                self.current_quantity = abs(es_position)
-                print("Status: LONG position detected")
-            elif es_position < 0:
-                self.active_short = True
-                self.active_long = False
-                self.current_quantity = abs(es_position)
-                print("Status: SHORT position detected")
-            else:
-                self.active_long = False
-                self.active_short = False
-                self.current_quantity = 0
-                print("Status: No ES position")
+            if not self.active_long and not self.active_short:
+                print("Status: No open positions")
+                self.active_symbol = None
 
             print("=========================\n")
 
             return {
-                "es_position": es_position,
+                "positions": position_data,
                 "active_long": self.active_long,
                 "active_short": self.active_short,
+                "active_symbol": self.active_symbol,
             }
 
         except Exception as e:

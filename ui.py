@@ -7,14 +7,22 @@ from api import IBConnection
 class TradingUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("ES Futures Trader")
-        self.root.geometry("485x720")
+        self.root.title("Futures Trader")
+        self.root.geometry("485x750")
 
         self.ib_conn = IBConnection()
         self.loop = asyncio.new_event_loop()
 
         self.create_widgets()
         self.update_flatten_button()
+
+        # Trace variables to update max loss display
+        self.symbol_var.trace_add("write", self.update_max_loss)
+        self.stop_points_var.trace_add("write", self.update_max_loss)
+        self.max_contracts_var.trace_add("write", self.update_max_loss)
+        self.quantity_var.trace_add("write", self.update_max_loss)
+        self.ladder_interval_var.trace_add("write", self.update_max_loss)
+        self.update_max_loss()
 
     def create_widgets(self):
         # Connection Frame
@@ -40,14 +48,22 @@ class TradingUI:
         self.trade_counter_label.pack()
 
         # Trading Frame
-        trade_frame = ttk.LabelFrame(self.root, text="Trade ES Futures", padding=10)
+        trade_frame = ttk.LabelFrame(self.root, text="Trade Futures", padding=10)
         trade_frame.grid(row=2, column=0, padx=10, pady=10, sticky="ew")
 
+        # Symbol Selection
+        ttk.Label(trade_frame, text="Symbol:").grid(row=0, column=0, sticky="w", pady=5)
+        self.symbol_var = tk.StringVar(value="ES")
+        self.symbol_combo = ttk.Combobox(
+            trade_frame, textvariable=self.symbol_var, values=["ES", "MES", "NQ", "MNQ"], state="readonly", width=10
+        )
+        self.symbol_combo.grid(row=0, column=1, sticky="w", pady=5)
+
         # Direction
-        ttk.Label(trade_frame, text="Direction:").grid(row=0, column=0, sticky="w", pady=5)
+        ttk.Label(trade_frame, text="Direction:").grid(row=1, column=0, sticky="w", pady=5)
         self.direction_var = tk.StringVar(value="LONG")
         direction_frame = ttk.Frame(trade_frame)
-        direction_frame.grid(row=0, column=1, sticky="w", pady=5)
+        direction_frame.grid(row=1, column=1, sticky="w", pady=5)
         ttk.Radiobutton(direction_frame, text="LONG", variable=self.direction_var, value="LONG").pack(
             side="left", padx=5
         )
@@ -56,41 +72,45 @@ class TradingUI:
         )
 
         # Quantity
-        ttk.Label(trade_frame, text="Quantity:").grid(row=1, column=0, sticky="w", pady=5)
+        ttk.Label(trade_frame, text="Quantity:").grid(row=2, column=0, sticky="w", pady=5)
         self.quantity_var = tk.StringVar(value="1")
         self.quantity_entry = ttk.Entry(trade_frame, textvariable=self.quantity_var, width=12)
-        self.quantity_entry.grid(row=1, column=1, sticky="w", pady=5)
+        self.quantity_entry.grid(row=2, column=1, sticky="w", pady=5)
 
         # Entry Price (optional)
-        ttk.Label(trade_frame, text="Entry Price:").grid(row=2, column=0, sticky="w", pady=5)
+        ttk.Label(trade_frame, text="Entry Price:").grid(row=3, column=0, sticky="w", pady=5)
         self.entry_price_var = tk.StringVar()
         entry_frame = ttk.Frame(trade_frame)
-        entry_frame.grid(row=2, column=1, sticky="w", pady=5)
+        entry_frame.grid(row=3, column=1, sticky="w", pady=5)
         self.entry_price_entry = ttk.Entry(entry_frame, textvariable=self.entry_price_var, width=12)
         self.entry_price_entry.pack(side="left")
         ttk.Label(entry_frame, text="(leave empty for market)").pack(side="left", padx=5)
 
         # Stop Loss Points
-        ttk.Label(trade_frame, text="Stop Loss (pts):").grid(row=3, column=0, sticky="w", pady=5)
+        ttk.Label(trade_frame, text="Stop Loss (pts):").grid(row=4, column=0, sticky="w", pady=5)
         self.stop_points_var = tk.StringVar(value="10")
-        self.stop_entry = ttk.Entry(trade_frame, textvariable=self.stop_points_var, width=12)
-        self.stop_entry.grid(row=3, column=1, sticky="w", pady=5)
+        stop_frame = ttk.Frame(trade_frame)
+        stop_frame.grid(row=4, column=1, sticky="w", pady=5)
+        self.stop_entry = ttk.Entry(stop_frame, textvariable=self.stop_points_var, width=12)
+        self.stop_entry.pack(side="left")
+        self.max_loss_label = ttk.Label(stop_frame, text="", foreground="red")
+        self.max_loss_label.pack(side="left", padx=10)
 
         # Ladder Interval
-        ttk.Label(trade_frame, text="Ladder Interval (pts):").grid(row=4, column=0, sticky="w", pady=5)
+        ttk.Label(trade_frame, text="Ladder Interval (pts):").grid(row=5, column=0, sticky="w", pady=5)
         self.ladder_interval_var = tk.StringVar(value="5")
         self.ladder_interval_entry = ttk.Entry(trade_frame, textvariable=self.ladder_interval_var, width=12)
-        self.ladder_interval_entry.grid(row=4, column=1, sticky="w", pady=5)
+        self.ladder_interval_entry.grid(row=5, column=1, sticky="w", pady=5)
 
         # Max Contracts
-        ttk.Label(trade_frame, text="Max Contracts:").grid(row=5, column=0, sticky="w", pady=5)
+        ttk.Label(trade_frame, text="Max Contracts:").grid(row=6, column=0, sticky="w", pady=5)
         self.max_contracts_var = tk.StringVar(value="3")
         self.max_contracts_entry = ttk.Entry(trade_frame, textvariable=self.max_contracts_var, width=12)
-        self.max_contracts_entry.grid(row=5, column=1, sticky="w", pady=5)
+        self.max_contracts_entry.grid(row=6, column=1, sticky="w", pady=5)
 
         # Execute Button
         self.execute_btn = ttk.Button(trade_frame, text="EXECUTE TRADE", command=self.execute_trade, state="disabled")
-        self.execute_btn.grid(row=6, column=0, columnspan=2, pady=15)
+        self.execute_btn.grid(row=7, column=0, columnspan=2, pady=15)
 
         # Info Frame
         info_frame = ttk.LabelFrame(self.root, text="Trade Info", padding=10)
@@ -141,15 +161,19 @@ class TradingUI:
         # Show position sync info
         sync_result = self.loop.run_until_complete(self.ib_conn.sync_positions())
         if sync_result:
-            es_avg_price = 0.0
-            if self.ib_conn.current_quantity > 0:
-                es_avg_price = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price(force_refresh=True))
+            positions_info = []
+            for sym, pos in sync_result["positions"].items():
+                if pos != 0:
+                    avg = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price(sym, force_refresh=True))
+                    positions_info.append(f"{sym}: {pos} @ {avg:.2f}" if avg > 0 else f"{sym}: {pos}")
+
+            pos_text = "\n".join(positions_info) if positions_info else "No open positions"
 
             info = f"""
 Connected to IB!
 
-ES Position: {sync_result['es_position']}
-ES Average Entry: {f'{es_avg_price:.2f}' if es_avg_price > 0 else 'N/A'}
+Positions:
+{pos_text}
             """
             self.update_info(info)
 
@@ -166,15 +190,17 @@ ES Average Entry: {f'{es_avg_price:.2f}' if es_avg_price > 0 else 'N/A'}
         # Show position sync info
         sync_result = self.loop.run_until_complete(self.ib_conn.sync_positions())
         if sync_result:
-            es_avg_price = 0.0
-            if self.ib_conn.current_quantity > 0:
-                es_avg_price = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price(force_refresh=True))
+            positions_info = []
+            for sym, pos in sync_result["positions"].items():
+                if pos != 0:
+                    avg = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price(sym, force_refresh=True))
+                    positions_info.append(f"{sym}: {pos} @ {avg:.2f}" if avg > 0 else f"{sym}: {pos}")
+
+            pos_text = "\n".join(positions_info) if positions_info else "No open positions"
 
             info = f"""
-Connected to IB!
-
-ES Position: {sync_result['es_position']}
-ES Average Entry: {f'{es_avg_price:.2f}' if es_avg_price > 0 else 'N/A'}
+Positions:
+{pos_text}
             """
             self.update_info(info)
 
@@ -215,31 +241,36 @@ ES Average Entry: {f'{es_avg_price:.2f}' if es_avg_price > 0 else 'N/A'}
             self.execute_btn.config(state="disabled")
             self.update_info("Executing trade...\n")
 
+            # Get selected symbol
+            symbol = self.symbol_var.get()
+
             # Execute trade
             result = self.loop.run_until_complete(
                 self.ib_conn.execute_trade_with_ladder(
-                    direction, entry_price, stop_points, quantity, ladder_interval, max_contracts
+                    symbol, direction, entry_price, stop_points, quantity, ladder_interval, max_contracts
                 )
             )
 
             if result["success"]:
                 # Display trade execution info
+                sym = result["symbol"]
                 ladder_info = ""
                 if result.get("ladder_orders"):
                     ladder_info = "\n\nLadder Orders Placed:\n" + "\n".join(
-                        [f"  - {o['action']} {o['quantity']} ES @ {o['price']}" for o in result["ladder_orders"]]
+                        [f"  - {o['action']} {o['quantity']} {sym} @ {o['price']}" for o in result["ladder_orders"]]
                     )
 
                 info = f"""
 Trade Executed Successfully!
 
+Symbol: {sym}
 Direction: {result['direction']}
-Initial Quantity: {result['quantity']} ES contracts
-Initial Fill: {result['es_fill']:.2f}
+Initial Quantity: {result['quantity']} contracts
+Initial Fill: {result['fill_price']:.2f}
 Expected Avg (if all fill): {result['expected_avg']:.2f}
 
-ES Stop Loss Placed:
-{'SELL' if direction == 'LONG' else 'BUY'} {result['es_stop_quantity']} ES @ {result['es_stop']} (STOP)
+Stop Loss Placed:
+{'SELL' if direction == 'LONG' else 'BUY'} {result['stop_quantity']} {sym} @ {result['stop_price']} (STOP)
 Stop Loss: {result['stop_points']} points
 {ladder_info}
                 """
@@ -299,12 +330,44 @@ Stop Loss: {result['stop_points']} points
         else:
             self.flatten_btn.config(state="disabled")
 
+    def update_max_loss(self, *_args):
+        """Calculate and display max loss based on symbol, stop points, and max contracts"""
+        multipliers = {"ES": 50.0, "MES": 5.0, "NQ": 20.0, "MNQ": 2.0}
+        try:
+            symbol = self.symbol_var.get()
+            stop_points = float(self.stop_points_var.get())
+            max_contracts = int(self.max_contracts_var.get())
+            quantity = int(self.quantity_var.get())
+            ladder_interval = float(self.ladder_interval_var.get())
+            multiplier = multipliers.get(symbol, 50.0)
+
+            # Calculate minimum stop loss needed
+            # num_ladders = how many additional entries after initial
+            num_ladders = (max_contracts - quantity) // quantity
+            # Min stop = distance from expected avg to lowest ladder + buffer
+            # Expected avg is at: entry - (ladder_interval * num_ladders) / 2
+            # Lowest ladder is at: entry - (ladder_interval * num_ladders)
+            # Distance = (ladder_interval * num_ladders) / 2
+            min_stop = (ladder_interval * num_ladders) / 2 + 0.25
+
+            max_loss = stop_points * max_contracts * multiplier
+
+            if stop_points < min_stop:
+                self.max_loss_label.config(
+                    text=f"Min stop: {min_stop:.2f} pts!", foreground="orange"
+                )
+            else:
+                self.max_loss_label.config(text=f"(Max loss: ${max_loss:,.0f})", foreground="red")
+        except (ValueError, AttributeError):
+            self.max_loss_label.config(text="")
+
     def flatten_position(self):
-        """Flatten all ES positions and cancel resting orders"""
+        """Flatten all positions and cancel resting orders"""
         self.flatten_btn.config(state="disabled")
         self.update_info("Flattening position...\n")
 
-        result = self.loop.run_until_complete(self.ib_conn.flatten_position())
+        symbol = self.symbol_var.get()
+        result = self.loop.run_until_complete(self.ib_conn.flatten_position(symbol))
 
         if result["success"]:
             closed_list = "\n".join(result.get("closed_contracts", []))
