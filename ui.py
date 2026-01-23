@@ -30,9 +30,16 @@ class TradingUI:
         self.symbol_var.trace_add("write", self.update_execute_button)
 
     def create_widgets(self):
+        # Status Frame (at very top)
+        status_frame = ttk.Frame(self.root, padding=0)
+        status_frame.grid(row=0, column=0, padx=0, pady=(10, 0), sticky="ew")
+
+        self.status_label = ttk.Label(status_frame, text="Not Connected", foreground="red")
+        self.status_label.pack()
+
         # Connection Frame
         conn_frame = ttk.LabelFrame(self.root, text="Connection", padding=10)
-        conn_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
+        conn_frame.grid(row=1, column=0, padx=10, pady=10, sticky="ew")
 
         self.connect_btn = ttk.Button(conn_frame, text="Connect", command=self.connect)
         self.connect_btn.pack(side="left", padx=5)
@@ -41,13 +48,6 @@ class TradingUI:
             conn_frame, text="Refresh Positions", command=self.refresh_positions, state="disabled"
         )
         self.refresh_btn.pack(side="right", padx=5)
-
-        # Status Frame
-        status_frame = ttk.Frame(self.root, padding=5)
-        status_frame.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="ew")
-
-        self.status_label = ttk.Label(status_frame, text="Not Connected", foreground="red")
-        self.status_label.pack()
 
         # Trading Frame
         trade_frame = ttk.LabelFrame(self.root, text="Trade Futures", padding=10)
@@ -263,16 +263,16 @@ Stop Loss: {result['stop_points']} points
                 """
                 self.update_info(info)
 
-                # Force button update
+                # Force button update - keep execute disabled since we have a position
                 self.root.update_idletasks()
                 self.update_flatten_button()
+                self.update_execute_button()
                 print(f"Active long: {self.ib_conn.active_long}, Active short: {self.ib_conn.active_short}")
             else:
                 self.update_info(f"ERROR: {result['message']}\n")
                 messagebox.showerror("Error", result["message"])
-
-            # Re-enable button
-            self.execute_btn.config(state="normal")
+                # Re-enable button only on failure
+                self.execute_btn.config(state="normal")
 
         except ValueError:
             messagebox.showerror("Error", "Invalid input values")
@@ -352,6 +352,9 @@ Stop Loss: {result['stop_points']} points
         """Flatten all positions and cancel resting orders"""
         self.flatten_btn.config(state="disabled")
         self.update_info("Flattening position...\n")
+
+        # Refresh positions first to get latest data
+        self.refresh_positions()
 
         symbol = self.symbol_var.get()
         result = self.loop.run_until_complete(self.ib_conn.flatten_position(symbol))

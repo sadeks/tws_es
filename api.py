@@ -49,20 +49,6 @@ class IBConnection:
             self.connected = False
             print("Disconnected from IB")
 
-    def create_contract(self, symbol, exchange="CME", currency="USD", last_trade_date=""):
-        """Create futures contract"""
-        contract = Future(
-            symbol=symbol, exchange=exchange, currency=currency, lastTradeDateOrContractMonth=last_trade_date
-        )
-        return contract
-
-    async def qualify_contract(self, contract):
-        """Qualify contract to get full details"""
-        qualified = await self.ib.qualifyContractsAsync(contract)
-        if qualified:
-            return qualified[0]
-        return None
-
     async def get_front_month_contract(self, symbol):
         """Get the front month (nearest expiration) contract"""
         # Request contract details to get all available contracts
@@ -362,14 +348,6 @@ class IBConnection:
         except Exception as e:
             print(f"Error getting {symbol} avg entry price: {e}")
             return 0.0
-
-    def get_positions(self):
-        """Get current positions"""
-        return self.ib.positions()
-
-    def get_open_orders(self):
-        """Get open orders"""
-        return self.ib.openOrders()
 
     async def flatten_position(self, symbol):
         """
