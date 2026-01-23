@@ -1,8 +1,5 @@
 from ib_async import IB, Future, MarketOrder, StopOrder, LimitOrder
 import asyncio
-import json
-import os
-from datetime import datetime
 
 
 class IBConnection:
@@ -29,66 +26,12 @@ class IBConnection:
         self.direction = None
         self.ladder_orders = []
 
-        # Trade counter
-        self.trade_counter_file = os.path.join(os.path.dirname(__file__), "trade_counter.json")
-        self.max_trades_per_day = 200
-        self.today_trade_count = 0
-
-    def load_trade_counter(self):
-        """Load trade counter from JSON file"""
-        today = datetime.now().strftime("%Y-%m-%d")
-
-        # Create file if doesn't exist
-        if not os.path.exists(self.trade_counter_file):
-            data = {today: 0}
-            with open(self.trade_counter_file, "w") as f:
-                json.dump(data, f, indent=2)
-            self.today_trade_count = 0
-            print(f"Created trade counter file. Today ({today}): 0 trades")
-            return
-
-        # Load existing file
-        with open(self.trade_counter_file, "r") as f:
-            data = json.load(f)
-
-        # Check if today's date exists
-        if today not in data:
-            data[today] = 0
-            with open(self.trade_counter_file, "w") as f:
-                json.dump(data, f, indent=2)
-            print(f"New day detected. Reset counter for {today}")
-
-        self.today_trade_count = data[today]
-        print(f"Trade counter loaded. Today ({today}): {self.today_trade_count}/{self.max_trades_per_day} trades")
-
-    def increment_trade_counter(self):
-        """Increment today's trade count"""
-        today = datetime.now().strftime("%Y-%m-%d")
-
-        with open(self.trade_counter_file, "r") as f:
-            data = json.load(f)
-
-        data[today] = data.get(today, 0) + 1
-        self.today_trade_count = data[today]
-
-        with open(self.trade_counter_file, "w") as f:
-            json.dump(data, f, indent=2)
-
-        print(f"Trade count incremented: {self.today_trade_count}/{self.max_trades_per_day}")
-
-    def can_execute_trade(self):
-        """Check if we can execute another trade today"""
-        return self.today_trade_count < self.max_trades_per_day
-
     async def connect(self, host="127.0.0.1", port=7497, client_id=1):
         """Connect to IB Gateway or TWS"""
         try:
             await self.ib.connectAsync(host, port, clientId=client_id)
             self.connected = True
             print(f"Connected to IB on {host}:{port}")
-
-            # Load trade counter for today
-            self.load_trade_counter()
 
             # Check for existing positions on connect
             await self.sync_positions()
@@ -271,13 +214,6 @@ class IBConnection:
             ladder_interval: Points between each ladder level
             max_contracts: Maximum number of contracts to accumulate
         """
-        # Check trade limit
-        if not self.can_execute_trade():
-            return {
-                "success": False,
-                "message": f"Daily trade limit reached ({self.max_trades_per_day} trades). Cannot execute new trade.",
-            }
-
         # Get front month contract
         print(f"Finding front month {symbol} contract...")
         contract = await self.get_front_month_contract(symbol)
@@ -377,9 +313,6 @@ class IBConnection:
                 f"Placing {symbol} stop loss: {stop_action} {max_contracts} @ {stop_price} (based on expected avg {expected_avg:.2f})"
             )
             await self.place_stop_order(contract, stop_action, max_contracts, stop_price)
-
-            # Increment trade counter after successful execution
-            self.increment_trade_counter()
 
             return {
                 "success": True,

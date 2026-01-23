@@ -2,13 +2,15 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import asyncio
 from api import IBConnection
+from components import BuySellToggle
 
 
 class TradingUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Futures Trader")
-        self.root.geometry("485x750")
+        self.root.geometry("475x780")
+        self.root.resizable(True, True)
 
         self.ib_conn = IBConnection()
         self.loop = asyncio.new_event_loop()
@@ -24,6 +26,9 @@ class TradingUI:
         self.ladder_interval_var.trace_add("write", self.update_max_loss)
         self.update_max_loss()
 
+        # Trace symbol to update execute button (disable if position exists)
+        self.symbol_var.trace_add("write", self.update_execute_button)
+
     def create_widgets(self):
         # Connection Frame
         conn_frame = ttk.LabelFrame(self.root, text="Connection", padding=10)
@@ -37,15 +42,12 @@ class TradingUI:
         )
         self.refresh_btn.pack(side="right", padx=5)
 
-        self.status_label = ttk.Label(conn_frame, text="Not Connected", foreground="red")
-        self.status_label.pack(side="left", padx=10)
+        # Status Frame
+        status_frame = ttk.Frame(self.root, padding=5)
+        status_frame.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="ew")
 
-        # Trade Counter Frame
-        counter_frame = ttk.Frame(self.root, padding=5)
-        counter_frame.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="ew")
-
-        self.trade_counter_label = ttk.Label(counter_frame, text="Trades Today: -/-", font=("Arial", 10, "bold"))
-        self.trade_counter_label.pack()
+        self.status_label = ttk.Label(status_frame, text="Not Connected", foreground="red")
+        self.status_label.pack()
 
         # Trading Frame
         trade_frame = ttk.LabelFrame(self.root, text="Trade Futures", padding=10)
@@ -62,14 +64,10 @@ class TradingUI:
         # Direction
         ttk.Label(trade_frame, text="Direction:").grid(row=1, column=0, sticky="w", pady=5)
         self.direction_var = tk.StringVar(value="LONG")
-        direction_frame = ttk.Frame(trade_frame)
-        direction_frame.grid(row=1, column=1, sticky="w", pady=5)
-        ttk.Radiobutton(direction_frame, text="LONG", variable=self.direction_var, value="LONG").pack(
-            side="left", padx=5
+        self.direction_toggle = BuySellToggle(
+            trade_frame, initial_sell=False, on_change=lambda mode: self.direction_var.set(mode)
         )
-        ttk.Radiobutton(direction_frame, text="SHORT", variable=self.direction_var, value="SHORT").pack(
-            side="left", padx=5
-        )
+        self.direction_toggle.grid(row=1, column=1, sticky="w", pady=5)
 
         # Quantity
         ttk.Label(trade_frame, text="Quantity:").grid(row=2, column=0, sticky="w", pady=5)
@@ -93,20 +91,30 @@ class TradingUI:
         stop_frame.grid(row=4, column=1, sticky="w", pady=5)
         self.stop_entry = ttk.Entry(stop_frame, textvariable=self.stop_points_var, width=12)
         self.stop_entry.pack(side="left")
-        self.max_loss_label = ttk.Label(stop_frame, text="", foreground="red")
-        self.max_loss_label.pack(side="left", padx=10)
+        self.min_stop_label = ttk.Label(stop_frame, text="", foreground="orange")
+        self.min_stop_label.pack(side="left")
+        self.max_loss_label = ttk.Label(stop_frame, text="Max loss: N/A", foreground="red")
+        self.max_loss_label.pack(side="left")
 
         # Ladder Interval
         ttk.Label(trade_frame, text="Ladder Interval (pts):").grid(row=5, column=0, sticky="w", pady=5)
         self.ladder_interval_var = tk.StringVar(value="5")
-        self.ladder_interval_entry = ttk.Entry(trade_frame, textvariable=self.ladder_interval_var, width=12)
-        self.ladder_interval_entry.grid(row=5, column=1, sticky="w", pady=5)
+        ladder_frame = ttk.Frame(trade_frame)
+        ladder_frame.grid(row=5, column=1, sticky="w", pady=5)
+        self.ladder_interval_entry = ttk.Entry(ladder_frame, textvariable=self.ladder_interval_var, width=12)
+        self.ladder_interval_entry.pack(side="left")
+        self.full_ladder_label = ttk.Label(ladder_frame, text="Full ladder: N/A", foreground="white")
+        self.full_ladder_label.pack(side="left", padx=5)
 
         # Max Contracts
         ttk.Label(trade_frame, text="Max Contracts:").grid(row=6, column=0, sticky="w", pady=5)
         self.max_contracts_var = tk.StringVar(value="3")
-        self.max_contracts_entry = ttk.Entry(trade_frame, textvariable=self.max_contracts_var, width=12)
-        self.max_contracts_entry.grid(row=6, column=1, sticky="w", pady=5)
+        max_frame = ttk.Frame(trade_frame)
+        max_frame.grid(row=6, column=1, sticky="w", pady=5)
+        self.max_contracts_entry = ttk.Entry(max_frame, textvariable=self.max_contracts_var, width=12)
+        self.max_contracts_entry.pack(side="left")
+        self.room_label = ttk.Label(max_frame, text="Room after last: N/A", foreground="white")
+        self.room_label.pack(side="left", padx=5)
 
         # Execute Button
         self.execute_btn = ttk.Button(trade_frame, text="EXECUTE TRADE", command=self.execute_trade, state="disabled")
@@ -155,29 +163,8 @@ class TradingUI:
         self.connect_btn.config(state="disabled")
         self.refresh_btn.config(state="normal")
 
-        # Update trade counter display and button state
-        self.update_trade_counter()
-
-        # Show position sync info
-        sync_result = self.loop.run_until_complete(self.ib_conn.sync_positions())
-        if sync_result:
-            positions_info = []
-            for sym, pos in sync_result["positions"].items():
-                if pos != 0:
-                    avg = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price(sym, force_refresh=True))
-                    positions_info.append(f"{sym}: {pos} @ {avg:.2f}" if avg > 0 else f"{sym}: {pos}")
-
-            pos_text = "\n".join(positions_info) if positions_info else "No open positions"
-
-            info = f"""
-Connected to IB!
-
-Positions:
-{pos_text}
-            """
-            self.update_info(info)
-
-        self.update_flatten_button()
+        # Refresh positions
+        self.refresh_positions()
 
     def refresh_positions(self):
         """Manually refresh positions from IBKR"""
@@ -205,7 +192,7 @@ Positions:
             self.update_info(info)
 
         self.update_flatten_button()
-        messagebox.showinfo("Refresh Complete", "Positions refreshed from IBKR!")
+        self.update_execute_button()
 
     def execute_trade(self):
         if not self.ib_conn.connected:
@@ -276,9 +263,6 @@ Stop Loss: {result['stop_points']} points
                 """
                 self.update_info(info)
 
-                # Update trade counter after successful trade
-                self.update_trade_counter()
-
                 # Force button update
                 self.root.update_idletasks()
                 self.update_flatten_button()
@@ -303,22 +287,13 @@ Stop Loss: {result['stop_points']} points
         self.info_text.insert(1.0, text)
         self.info_text.config(state="disabled")
 
-    def update_trade_counter(self):
-        """Update trade counter label and execute button state"""
-        count = self.ib_conn.today_trade_count
-        max_count = self.ib_conn.max_trades_per_day
-        remaining = max_count - count
+    def update_execute_button(self, *_args):
+        """Update execute button state based on connection and existing positions"""
+        # Disable if any position exists (must flatten first)
+        has_any_position = self.ib_conn.active_long or self.ib_conn.active_short
 
-        # Update label
-        if remaining > 0:
-            self.trade_counter_label.config(
-                text=f"Trades Today: {count}/{max_count} ({remaining} remaining)", foreground="green"
-            )
-        else:
-            self.trade_counter_label.config(text=f"Trades Today: {count}/{max_count} (LIMIT REACHED)", foreground="red")
-
-        # Update execute button state
-        if self.ib_conn.connected and self.ib_conn.can_execute_trade():
+        # Disable if: not connected or any position exists
+        if self.ib_conn.connected and not has_any_position:
             self.execute_btn.config(state="normal")
         else:
             self.execute_btn.config(state="disabled")
@@ -352,14 +327,26 @@ Stop Loss: {result['stop_points']} points
 
             max_loss = stop_points * max_contracts * multiplier
 
+            # Show min stop warning OR max loss (not both)
             if stop_points < min_stop:
-                self.max_loss_label.config(
-                    text=f"Min stop: {min_stop:.2f} pts!", foreground="orange"
-                )
+                self.min_stop_label.config(text=f"Min stop: {min_stop:.2f} pts!")
+                self.max_loss_label.config(text="")
             else:
-                self.max_loss_label.config(text=f"(Max loss: ${max_loss:,.0f})", foreground="red")
+                self.min_stop_label.config(text="")
+                self.max_loss_label.config(text=f"Max loss: ${max_loss:,.0f}")
+
+            # Calculate ladder distance info
+            ladder_span = ladder_interval * num_ladders
+            room_after_last = stop_points - (ladder_span / 2)
+            full_ladder = (ladder_span / 2) + stop_points
+
+            self.room_label.config(text=f"Room after last: {room_after_last:.1f} pts")
+            self.full_ladder_label.config(text=f"Full ladder: {full_ladder:.1f} pts")
         except (ValueError, AttributeError):
+            self.min_stop_label.config(text="")
             self.max_loss_label.config(text="")
+            self.room_label.config(text="Room after last: N/A")
+            self.full_ladder_label.config(text="Full ladder: N/A")
 
     def flatten_position(self):
         """Flatten all positions and cancel resting orders"""
@@ -384,12 +371,11 @@ All positions closed and orders cancelled.
             """
             self.update_info(info)
             # Refresh positions to update button states
-            self.loop.run_until_complete(self.ib_conn.sync_positions())
-            self.update_flatten_button()
+            self.refresh_positions()
         else:
             self.update_info(f"ERROR: {result['message']}\n")
             messagebox.showerror("Error", result["message"])
-            self.update_flatten_button()
+            self.refresh_positions()
 
     def on_closing(self):
         if self.ib_conn.connected:
