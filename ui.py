@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import asyncio
+import threading
 from api import IBConnection
 from components import BuySellToggle
 
@@ -13,7 +14,8 @@ class TradingUI:
         self.root.resizable(True, True)
 
         self.ib_conn = IBConnection()
-        self.loop = asyncio.new_event_loop()
+        self.loop = None
+        self.ib_thread = None
 
         self.create_widgets()
         self.update_flatten_button()
@@ -26,8 +28,9 @@ class TradingUI:
         self.ladder_interval_var.trace_add("write", self.update_max_loss)
         self.update_max_loss()
 
-        # Trace symbol to update execute button (disable if position exists)
+        # Trace symbol to update execute button and start monitoring
         self.symbol_var.trace_add("write", self.update_execute_button)
+        self.symbol_var.trace_add("write", self.on_symbol_changed)
 
     def create_widgets(self):
         # Status Frame (at very top)
@@ -127,26 +130,60 @@ class TradingUI:
         self.info_text = tk.Text(info_frame, height=8, width=50, state="disabled")
         self.info_text.pack()
 
+        # PnL label above the Manage Position section
+        pnl_frame = ttk.Frame(self.root)
+        pnl_frame.grid(row=4, column=0, padx=10, pady=(10, 0), sticky="ew")
+        self.pnl_label = tk.Label(pnl_frame, text="", font=("Arial", 12, "bold"))
+        self.pnl_label.pack()
+
         # Close Position Frame
-        close_frame = ttk.LabelFrame(self.root, text="Manage Position", padding=10)
-        close_frame.grid(row=4, column=0, padx=10, pady=10, sticky="ew")
+        self.close_frame = ttk.LabelFrame(self.root, text="Manage Position", padding=10)
+        self.close_frame.grid(row=5, column=0, padx=10, pady=(0, 10), sticky="ew")
 
         # Button container for side-by-side layout
-        btn_frame = ttk.Frame(close_frame)
+        btn_frame = ttk.Frame(self.close_frame)
         btn_frame.pack(fill="x")
 
-        self.breakeven_btn = ttk.Button(btn_frame, text="Move Stop to Breakeven", command=self.move_stop_to_breakeven, state="disabled")
+        self.breakeven_btn = ttk.Button(
+            btn_frame, text="Move Stop to Breakeven", command=self.move_stop_to_breakeven, state="disabled"
+        )
         self.breakeven_btn.pack(side="left")
 
-        self.flatten_btn = ttk.Button(btn_frame, text="Flatten Position", command=self.flatten_position, state="disabled")
+        self.flatten_btn = ttk.Button(
+            btn_frame, text="Flatten Position", command=self.flatten_position, state="disabled"
+        )
         self.flatten_btn.pack(side="right")
+
+    def _run_event_loop(self):
+        """Run the asyncio event loop in a background thread"""
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_forever()
+
+    def _schedule(self, coro):
+        """Schedule a coroutine to run in the background thread"""
+        if not self.loop:
+            return None
+        return asyncio.run_coroutine_threadsafe(coro, self.loop)
+
+    def _run_sync(self, coro):
+        """Run a coroutine synchronously (blocking) - use sparingly"""
+        if not self.loop:
+            return None
+        future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        return future.result(timeout=30)
 
     def connect(self):
         host = "127.0.0.1"
 
+        # Create and start the event loop in a background thread
+        self.loop = asyncio.new_event_loop()
+        self.ib_conn.loop = self.loop
+        self.ib_thread = threading.Thread(target=self._run_event_loop, daemon=True)
+        self.ib_thread.start()
+
         # Try live account first (port 7496)
         print("Attempting to connect to Live Account (port 7496)...")
-        success = self.loop.run_until_complete(self.ib_conn.connect(host, 7496))
+        success = self._run_sync(self.ib_conn.connect(host, 7496))
 
         if success:
             account_type = "Live Account Connected"
@@ -154,7 +191,7 @@ class TradingUI:
         else:
             # Try demo account (port 7497)
             print("Live account failed. Attempting Demo Account (port 7497)...")
-            success = self.loop.run_until_complete(self.ib_conn.connect(host, 7497))
+            success = self._run_sync(self.ib_conn.connect(host, 7497))
 
             if success:
                 account_type = "Demo Account Connected"
@@ -171,6 +208,58 @@ class TradingUI:
         # Refresh positions
         self.refresh_positions()
 
+        # Start the UI update timer (every 500ms)
+        self._start_ui_timer()
+
+        # Start monitoring the selected symbol
+        symbol = self.symbol_var.get()
+        self._schedule(self.ib_conn.start_monitor(symbol))
+
+    def _start_ui_timer(self):
+        """Start the periodic UI update timer"""
+        self._update_ui_from_cache()
+        self.root.after(500, self._start_ui_timer)
+
+    def _update_ui_from_cache(self):
+        """Update UI elements from cached values (called by timer)"""
+        if not self.ib_conn.connected:
+            return
+
+        # Update PnL label
+        if (
+            (self.ib_conn.active_long or self.ib_conn.active_short)
+            and self.ib_conn.avg_entry_price > 0
+            and self.ib_conn.current_price is not None
+        ):
+            symbol = self.ib_conn.active_symbol
+            current_price = self.ib_conn.current_price
+            avg_price = self.ib_conn.avg_entry_price
+            qty = self.ib_conn.current_quantity
+            multiplier = self.ib_conn.MULTIPLIERS.get(symbol, 50.0)
+
+            if self.ib_conn.active_long:
+                pnl = (current_price - avg_price) * qty * multiplier
+            else:  # short
+                pnl = (avg_price - current_price) * qty * multiplier
+
+            if pnl >= 0:
+                self.pnl_label.config(text=f"PNL +${pnl:,.0f}", fg="green")
+            else:
+                self.pnl_label.config(text=f"PNL -${abs(pnl):,.0f}", fg="red")
+        else:
+            self.pnl_label.config(text="")
+
+        # Update button states
+        self.update_flatten_button()
+        self.update_execute_button()
+        self.update_breakeven_button()
+
+    def on_symbol_changed(self, *_args):
+        """Called when symbol dropdown changes - start monitoring new symbol"""
+        if self.ib_conn.connected:
+            symbol = self.symbol_var.get()
+            self._schedule(self.ib_conn.start_monitor(symbol))
+
     def refresh_positions(self):
         """Manually refresh positions from IBKR"""
         if not self.ib_conn.connected:
@@ -180,12 +269,12 @@ class TradingUI:
         print("\n*** Manual Refresh Triggered ***\n")
 
         # Show position sync info
-        sync_result = self.loop.run_until_complete(self.ib_conn.sync_positions())
+        sync_result = self._run_sync(self.ib_conn.sync_positions())
         if sync_result:
             positions_info = []
             for sym, pos in sync_result["positions"].items():
                 if pos != 0:
-                    avg = self.loop.run_until_complete(self.ib_conn.get_avg_entry_price(sym, force_refresh=True))
+                    avg = self._run_sync(self.ib_conn.get_avg_entry_price(sym, force_refresh=True))
                     positions_info.append(f"{sym}: {pos} @ {avg:.2f}" if avg > 0 else f"{sym}: {pos}")
 
             pos_text = "\n".join(positions_info) if positions_info else "No open positions"
@@ -238,7 +327,7 @@ Positions:
             symbol = self.symbol_var.get()
 
             # Execute trade
-            result = self.loop.run_until_complete(
+            result = self._run_sync(
                 self.ib_conn.execute_trade_with_ladder(
                     symbol, direction, entry_price, stop_points, quantity, ladder_interval, max_contracts
                 )
@@ -322,8 +411,8 @@ Stop Loss: {result['stop_points']} points
             self.breakeven_btn.config(state="disabled")
             return
 
-        # Get current price and use cached average
-        current_price = self.loop.run_until_complete(self.ib_conn.get_current_price(symbol))
+        # Use cached current price from monitor
+        current_price = self.ib_conn.current_price
         avg_price = self.ib_conn.avg_entry_price
 
         if not current_price or avg_price <= 0:
@@ -387,7 +476,7 @@ Stop Loss: {result['stop_points']} points
         self.update_info("Flattening position...\n")
 
         symbol = self.ib_conn.active_symbol or self.symbol_var.get()
-        result = self.loop.run_until_complete(self.ib_conn.flatten_position(symbol))
+        result = self._run_sync(self.ib_conn.flatten_position(symbol))
 
         if result["success"]:
             closed_list = "\n".join(result.get("closed_contracts", []))
@@ -417,7 +506,7 @@ All positions closed and orders cancelled.
             messagebox.showerror("Error", "No active position")
             return
 
-        result = self.loop.run_until_complete(self.ib_conn.move_stop_to_breakeven(symbol))
+        result = self._run_sync(self.ib_conn.move_stop_to_breakeven(symbol))
 
         if result["success"]:
             info = f"""
@@ -436,6 +525,8 @@ Orders Cancelled: {result['cancelled_orders']}
     def on_closing(self):
         if self.ib_conn.connected:
             self.ib_conn.disconnect()
+        if self.loop:
+            self.loop.call_soon_threadsafe(self.loop.stop)
         self.root.destroy()
 
 

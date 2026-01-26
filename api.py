@@ -26,6 +26,14 @@ class IBConnection:
         self.direction = None
         self.ladder_orders = []
 
+        # For background monitoring
+        self.loop = None
+        self.monitor_running = False
+        self.stop_monitor = False
+        self.current_price = None  # Live price updated by monitor
+        self.market_data_ticker = None
+        self.monitored_symbol = None
+
     async def connect(self, host="127.0.0.1", port=7497, client_id=1):
         """Connect to IB Gateway or TWS"""
         try:
@@ -44,10 +52,105 @@ class IBConnection:
 
     def disconnect(self):
         """Disconnect from IB"""
+        self.stop_monitor = True
         if self.connected:
             self.ib.disconnect()
             self.connected = False
             print("Disconnected from IB")
+
+    async def start_monitor(self, symbol):
+        """Start background monitoring for a symbol"""
+        if self.monitor_running and self.monitored_symbol == symbol:
+            return  # Already monitoring this symbol
+
+        # Stop existing monitor if running
+        if self.monitor_running:
+            await self.stop_monitoring()
+
+        self.monitored_symbol = symbol
+        self.stop_monitor = False
+
+        # Get contract for the symbol
+        contract = await self.get_front_month_contract(symbol)
+        if not contract:
+            print(f"Could not get contract for {symbol}")
+            return
+
+        # Subscribe to market data
+        self.market_data_ticker = self.ib.reqMktData(contract)
+        print(f"Subscribed to {symbol} market data")
+
+        # Start monitor loop
+        if self.loop:
+            self.loop.create_task(self._monitor_loop(symbol, contract))
+
+    async def stop_monitoring(self):
+        """Stop the background monitor"""
+        self.stop_monitor = True
+        if self.market_data_ticker and self.monitored_symbol:
+            try:
+                contract = await self.get_front_month_contract(self.monitored_symbol)
+                if contract:
+                    self.ib.cancelMktData(contract)
+            except Exception:
+                pass
+        self.market_data_ticker = None
+        self.monitored_symbol = None
+        self.monitor_running = False
+        await asyncio.sleep(0.2)
+
+    async def _monitor_loop(self, symbol, contract):
+        """Background loop that updates price and position"""
+        self.monitor_running = True
+        print(f"Monitor started for {symbol}")
+        last_position_update = 0
+
+        while self.connected and not self.stop_monitor:
+            await asyncio.sleep(0.1)  # 100ms polling
+
+            # Update price from ticker
+            if self.market_data_ticker:
+                price = self.market_data_ticker.marketPrice()
+                if price is not None and price == price:  # Check for NaN
+                    self.current_price = price
+
+            # Update position stats every ~1 second
+            current_time = asyncio.get_event_loop().time()
+            if current_time - last_position_update >= 1.0:
+                await self._update_position_stats(symbol)
+                last_position_update = current_time
+
+        self.monitor_running = False
+        print(f"Monitor stopped for {symbol}")
+
+    async def _update_position_stats(self, symbol):
+        """Update position and average cost from IB"""
+        try:
+            positions = self.ib.positions()
+            multiplier = self.MULTIPLIERS.get(symbol, 50.0)
+
+            found = False
+            for pos in positions:
+                if pos.contract.symbol == symbol and pos.position != 0:
+                    self.current_quantity = abs(int(pos.position))
+                    self.avg_entry_price = pos.avgCost / multiplier
+                    self.active_long = pos.position > 0
+                    self.active_short = pos.position < 0
+                    self.active_symbol = symbol
+                    found = True
+                    break
+
+            if not found:
+                # No position for this symbol
+                if self.active_symbol == symbol:
+                    self.current_quantity = 0
+                    self.avg_entry_price = 0.0
+                    self.active_long = False
+                    self.active_short = False
+                    self.active_symbol = None
+
+        except Exception as e:
+            print(f"Error updating position stats: {e}")
 
     async def get_front_month_contract(self, symbol):
         """Get the front month (nearest expiration) contract"""
