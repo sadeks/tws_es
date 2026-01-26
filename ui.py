@@ -131,15 +131,15 @@ class TradingUI:
         close_frame = ttk.LabelFrame(self.root, text="Manage Position", padding=10)
         close_frame.grid(row=4, column=0, padx=10, pady=10, sticky="ew")
 
-        self.flatten_btn = ttk.Button(
-            close_frame, text="Flatten Position", command=self.flatten_position, state="disabled", width=20
-        )
-        self.flatten_btn.pack(pady=(0, 5))
+        # Button container for side-by-side layout
+        btn_frame = ttk.Frame(close_frame)
+        btn_frame.pack(fill="x")
 
-        self.breakeven_btn = ttk.Button(
-            close_frame, text="Move Stop to Breakeven", command=self.move_stop_to_breakeven, state="disabled", width=20
-        )
-        self.breakeven_btn.pack()
+        self.breakeven_btn = ttk.Button(btn_frame, text="Move Stop to Breakeven", command=self.move_stop_to_breakeven, state="disabled")
+        self.breakeven_btn.pack(side="left")
+
+        self.flatten_btn = ttk.Button(btn_frame, text="Flatten Position", command=self.flatten_position, state="disabled")
+        self.flatten_btn.pack(side="right")
 
     def connect(self):
         host = "127.0.0.1"

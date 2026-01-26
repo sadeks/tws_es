@@ -80,8 +80,12 @@ class IBConnection:
         self.ib.cancelMktData(contract)
         return price
 
-    async def place_market_order(self, contract, action, quantity):
-        """Place market order (BUY/SELL)"""
+    async def place_market_order(self, contract, action, quantity, wait_for_fill=True):
+        """Place market order (BUY/SELL)
+
+        Args:
+            wait_for_fill: If True, wait and retry to get fill price. If False, return quickly.
+        """
         # Qualify contract to ensure it's properly set up for trading
         qualified = await self.ib.qualifyContractsAsync(contract)
         if qualified:
@@ -93,6 +97,12 @@ class IBConnection:
         # Wait for fill
         while not trade.isDone():
             await self.ib.updateEvent
+
+        # Quick exit if we don't need fill price
+        if not wait_for_fill:
+            await asyncio.sleep(0.1)  # Brief pause to let fill notification come through
+            fill_price = trade.orderStatus.avgFillPrice or 0.0
+            return trade, fill_price
 
         # Retry loop to get fill price (data may take time to populate)
         fill_price = 0.0
@@ -466,20 +476,20 @@ class IBConnection:
                 if position_qty > 0:
                     # Long position - sell to close
                     print(f"Closing LONG {symbol} position - SELL {position_qty}...")
-                    _, fill_price = await self.place_market_order(position_contract, "SELL", position_qty)
+                    _, fill_price = await self.place_market_order(position_contract, "SELL", position_qty, wait_for_fill=False)
+                    closed_contracts.append(f"{position_qty} {symbol} LONG @ {fill_price:.2f}" if fill_price > 0 else f"{position_qty} {symbol} LONG")
                     if fill_price > 0:
-                        closed_contracts.append(f"{position_qty} {symbol} LONG @ {fill_price:.2f}")
                         fill_prices.append(fill_price)
-                        print(f"{symbol} closed at {fill_price}")
+                    print(f"{symbol} closed")
                 else:
                     # Short position - buy to close
                     qty = abs(position_qty)
                     print(f"Closing SHORT {symbol} position - BUY {qty}...")
-                    _, fill_price = await self.place_market_order(position_contract, "BUY", qty)
+                    _, fill_price = await self.place_market_order(position_contract, "BUY", qty, wait_for_fill=False)
+                    closed_contracts.append(f"{qty} {symbol} SHORT @ {fill_price:.2f}" if fill_price > 0 else f"{qty} {symbol} SHORT")
                     if fill_price > 0:
-                        closed_contracts.append(f"{qty} {symbol} SHORT @ {fill_price:.2f}")
                         fill_prices.append(fill_price)
-                        print(f"{symbol} closed at {fill_price}")
+                    print(f"{symbol} closed")
 
                 # Reset tracking if this was the active symbol
                 if self.active_symbol == symbol:
