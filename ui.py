@@ -134,7 +134,12 @@ class TradingUI:
         self.flatten_btn = ttk.Button(
             close_frame, text="Flatten Position", command=self.flatten_position, state="disabled", width=20
         )
-        self.flatten_btn.pack()
+        self.flatten_btn.pack(pady=(0, 5))
+
+        self.breakeven_btn = ttk.Button(
+            close_frame, text="Move Stop to Breakeven", command=self.move_stop_to_breakeven, state="disabled", width=20
+        )
+        self.breakeven_btn.pack()
 
     def connect(self):
         host = "127.0.0.1"
@@ -193,6 +198,7 @@ Positions:
 
         self.update_flatten_button()
         self.update_execute_button()
+        self.update_breakeven_button()
 
     def execute_trade(self):
         if not self.ib_conn.connected:
@@ -305,6 +311,33 @@ Stop Loss: {result['stop_points']} points
         else:
             self.flatten_btn.config(state="disabled")
 
+    def update_breakeven_button(self):
+        """Update breakeven button state - only enable if price is favorable"""
+        if not (self.ib_conn.active_long or self.ib_conn.active_short):
+            self.breakeven_btn.config(state="disabled")
+            return
+
+        symbol = self.ib_conn.active_symbol
+        if not symbol:
+            self.breakeven_btn.config(state="disabled")
+            return
+
+        # Get current price and use cached average
+        current_price = self.loop.run_until_complete(self.ib_conn.get_current_price(symbol))
+        avg_price = self.ib_conn.avg_entry_price
+
+        if not current_price or avg_price <= 0:
+            self.breakeven_btn.config(state="disabled")
+            return
+
+        # Enable only if price is favorable for breakeven
+        if self.ib_conn.active_long and current_price > avg_price:
+            self.breakeven_btn.config(state="normal")
+        elif self.ib_conn.active_short and current_price < avg_price:
+            self.breakeven_btn.config(state="normal")
+        else:
+            self.breakeven_btn.config(state="disabled")
+
     def update_max_loss(self, *_args):
         """Calculate and display max loss based on symbol, stop points, and max contracts"""
         multipliers = {"ES": 50.0, "MES": 5.0, "NQ": 20.0, "MNQ": 2.0}
@@ -353,10 +386,7 @@ Stop Loss: {result['stop_points']} points
         self.flatten_btn.config(state="disabled")
         self.update_info("Flattening position...\n")
 
-        # Refresh positions first to get latest data
-        self.refresh_positions()
-
-        symbol = self.symbol_var.get()
+        symbol = self.ib_conn.active_symbol or self.symbol_var.get()
         result = self.loop.run_until_complete(self.ib_conn.flatten_position(symbol))
 
         if result["success"]:
@@ -373,12 +403,35 @@ Orders Cancelled: {result['cancelled_orders']}
 All positions closed and orders cancelled.
             """
             self.update_info(info)
-            # Refresh positions to update button states
-            self.refresh_positions()
         else:
             self.update_info(f"ERROR: {result['message']}\n")
             messagebox.showerror("Error", result["message"])
-            self.refresh_positions()
+
+    def move_stop_to_breakeven(self):
+        """Move stop loss to breakeven (average cost)"""
+        self.breakeven_btn.config(state="disabled")
+        self.update_info("Moving stop to breakeven...\n")
+
+        symbol = self.ib_conn.active_symbol
+        if not symbol:
+            messagebox.showerror("Error", "No active position")
+            return
+
+        result = self.loop.run_until_complete(self.ib_conn.move_stop_to_breakeven(symbol))
+
+        if result["success"]:
+            info = f"""
+Stop Moved to Breakeven!
+
+Symbol: {result['symbol']}
+New Stop Price: {result['stop_price']:.2f}
+Stop Quantity: {result['stop_quantity']}
+Orders Cancelled: {result['cancelled_orders']}
+            """
+            self.update_info(info)
+        else:
+            self.update_info(f"ERROR: {result['message']}\n")
+            messagebox.showerror("Error", result["message"])
 
     def on_closing(self):
         if self.ib_conn.connected:

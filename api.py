@@ -349,6 +349,85 @@ class IBConnection:
             print(f"Error getting {symbol} avg entry price: {e}")
             return 0.0
 
+    async def get_current_price(self, symbol):
+        """Get current market price for symbol"""
+        try:
+            contract = await self.get_front_month_contract(symbol)
+            if not contract:
+                return None
+            price = await self.get_market_price(contract)
+            return price
+        except Exception as e:
+            print(f"Error getting current price: {e}")
+            return None
+
+    async def move_stop_to_breakeven(self, symbol):
+        """
+        Cancel all resting orders and place new stop at average cost (breakeven)
+
+        Args:
+            symbol: 'ES', 'MES', 'NQ', or 'MNQ'
+        """
+        try:
+            print(f"\n=== Moving Stop to Breakeven for {symbol} ===")
+
+            # Use cached average entry price
+            avg_price = self.avg_entry_price
+            if avg_price <= 0:
+                return {"success": False, "message": "Could not get average entry price"}
+
+            # Get position quantity and direction
+            positions = self.ib.positions()
+            position_qty = 0
+            position_contract = None
+
+            for pos in positions:
+                if pos.contract.symbol == symbol:
+                    position_qty = int(pos.position)
+                    position_contract = pos.contract
+                    break
+
+            if position_qty == 0:
+                return {"success": False, "message": f"No {symbol} position found"}
+
+            # Cancel all open orders for this symbol
+            open_orders = self.ib.openTrades()
+            cancelled_count = 0
+            for trade in open_orders:
+                if trade.contract.symbol == symbol and not trade.isDone():
+                    self.ib.cancelOrder(trade.order)
+                    cancelled_count += 1
+                    print(f"Cancelled {symbol} order")
+
+            # Wait for cancellations to process
+            await asyncio.sleep(0.5)
+
+            # Place new stop at breakeven (average price)
+            stop_price = round(avg_price * 4) / 4  # Round to tick size
+
+            if position_qty > 0:
+                # Long position - stop is a SELL
+                stop_action = "SELL"
+                stop_qty = position_qty
+            else:
+                # Short position - stop is a BUY
+                stop_action = "BUY"
+                stop_qty = abs(position_qty)
+
+            print(f"Placing breakeven stop: {stop_action} {stop_qty} {symbol} @ {stop_price}")
+            await self.place_stop_order(position_contract, stop_action, stop_qty, stop_price)
+
+            return {
+                "success": True,
+                "symbol": symbol,
+                "stop_price": stop_price,
+                "stop_quantity": stop_qty,
+                "cancelled_orders": cancelled_count,
+            }
+
+        except Exception as e:
+            return {"success": False, "message": f"Error moving stop to breakeven: {str(e)}"}
+
     async def flatten_position(self, symbol):
         """
         Flatten position for given symbol and cancel all resting orders
