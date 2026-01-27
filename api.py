@@ -254,33 +254,9 @@ class IBConnection:
         if not wait_for_fill:
             return trade, limit_price
 
-        # Wait for fill
-        while not trade.isDone():
-            await self.ib.updateEvent
-
-        # Retry loop to get fill price (data may take time to populate)
-        fill_price = 0.0
-        for attempt in range(3):
-            await asyncio.sleep(0.5)
-
-            # Try to get fill price from fills
-            if trade.fills:
-                total_qty = sum(f.execution.shares for f in trade.fills)
-                weighted_price = sum(f.execution.avgPrice * f.execution.shares for f in trade.fills)
-                fill_price = weighted_price / total_qty if total_qty > 0 else 0.0
-
-            # Fallback to orderStatus
-            if fill_price == 0.0 and trade.orderStatus.avgFillPrice:
-                fill_price = trade.orderStatus.avgFillPrice
-
-            if fill_price > 0.0:
-                break
-
-        # Fallback: if still 0, use limit price (order was filled at limit)
-        if fill_price == 0.0:
-            fill_price = limit_price
-
-        return trade, fill_price
+        # Non-blocking: just return the trade and limit price
+        # Position tracking is handled by the background monitor
+        return trade, limit_price
 
     async def place_stop_order(self, contract, action, quantity, stop_price, parent_order_id=None):
         """Place stop order"""
@@ -290,6 +266,7 @@ class IBConnection:
             contract = qualified[0]
 
         order = StopOrder(action, quantity, stopPrice=stop_price)
+        order.outsideRth = True  # Allow stop to trigger outside regular trading hours
 
         if parent_order_id:
             order.parentId = parent_order_id
@@ -345,26 +322,19 @@ class IBConnection:
                 _, fill_price = await self.place_market_order(contract, action, quantity)
 
             if fill_price == 0.0:
-                return {"success": False, "message": "Order filled but could not get fill price"}
+                return {"success": False, "message": "Order placed but could not determine price"}
 
-            print(f"{symbol} filled at {fill_price}")
+            print(f"{symbol} order placed at {fill_price}")
 
-            # Initialize position tracking
-            self.current_quantity = quantity
-            self.avg_entry_price = fill_price
-
-            # Set active position
-            if direction == "LONG":
-                self.active_long = True
-            else:
-                self.active_short = True
+            # Position tracking is handled by background monitor
+            # Don't set active_long/active_short here - let monitor detect actual fills
 
             # Calculate expected average if all ladder orders fill
             self.ladder_orders = []
             ladder_prices = []
 
-            if self.current_quantity < max_contracts:
-                remaining_contracts = max_contracts - self.current_quantity
+            if quantity < max_contracts:
+                remaining_contracts = max_contracts - quantity
                 num_ladder_steps = remaining_contracts // quantity
 
                 for i in range(1, num_ladder_steps + 1):
@@ -395,7 +365,7 @@ class IBConnection:
                         {"trade": ladder_trade, "price": ladder_price, "action": action, "quantity": quantity}
                     )
             else:
-                expected_avg = self.avg_entry_price
+                expected_avg = fill_price
 
             # Calculate stop price based on expected average
             if direction == "LONG":
@@ -419,7 +389,7 @@ class IBConnection:
                 "fill_price": fill_price,
                 "direction": direction,
                 "stop_points": stop_points,
-                "quantity": self.current_quantity,
+                "quantity": quantity,
                 "ladder_orders": [
                     {"price": o["price"], "action": o["action"], "quantity": o["quantity"]} for o in self.ladder_orders
                 ],
@@ -631,6 +601,28 @@ class IBConnection:
 
         except Exception as e:
             return {"success": False, "message": f"Error flattening position: {str(e)}"}
+
+    async def get_open_orders(self):
+        """Get all open/resting orders"""
+        try:
+            trades = self.ib.openTrades()
+            orders = []
+            for trade in trades:
+                if not trade.isDone():
+                    order = trade.order
+                    contract = trade.contract
+                    orders.append({
+                        "symbol": contract.symbol,
+                        "action": order.action,
+                        "quantity": int(order.totalQuantity),
+                        "order_type": order.orderType,
+                        "price": order.lmtPrice if order.orderType == "LMT" else order.auxPrice,
+                        "status": trade.orderStatus.status,
+                    })
+            return orders
+        except Exception as e:
+            print(f"Error getting open orders: {e}")
+            return []
 
     async def sync_positions(self):
         """Sync position state from IB account for all supported symbols"""

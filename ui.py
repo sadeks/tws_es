@@ -123,16 +123,25 @@ class TradingUI:
         self.execute_btn = ttk.Button(trade_frame, text="EXECUTE TRADE", command=self.execute_trade, state="disabled")
         self.execute_btn.grid(row=7, column=0, columnspan=2, pady=15)
 
-        # Info Frame
-        info_frame = ttk.LabelFrame(self.root, text="Trade Info", padding=10)
-        info_frame.grid(row=3, column=0, padx=10, pady=10, sticky="ew")
+        # Tabbed Info Section
+        self.info_notebook = ttk.Notebook(self.root)
+        self.info_notebook.grid(row=3, column=0, padx=10, pady=(10, 2), sticky="ew")
 
-        self.info_text = tk.Text(info_frame, height=8, width=50, state="disabled")
-        self.info_text.pack()
+        # Execution Log Tab
+        exec_frame = ttk.Frame(self.info_notebook, padding=2)
+        self.info_notebook.add(exec_frame, text="Execution Log")
+        self.exec_text = tk.Text(exec_frame, height=8, width=50, state="disabled")
+        self.exec_text.pack(fill="both", expand=True)
+
+        # Position Tab
+        pos_frame = ttk.Frame(self.info_notebook, padding=2)
+        self.info_notebook.add(pos_frame, text="Position")
+        self.pos_text = tk.Text(pos_frame, height=8, width=50, state="disabled")
+        self.pos_text.pack(fill="both", expand=True)
 
         # PnL label above the Manage Position section
         pnl_frame = ttk.Frame(self.root)
-        pnl_frame.grid(row=4, column=0, padx=10, pady=(10, 0), sticky="ew")
+        pnl_frame.grid(row=4, column=0, padx=10, pady=(2, 0), sticky="ew")
         self.pnl_label = tk.Label(pnl_frame, text="", font=("Arial", 12, "bold"))
         self.pnl_label.pack()
 
@@ -208,6 +217,9 @@ class TradingUI:
         # Refresh positions
         self.refresh_positions()
 
+        # Display open orders
+        self._display_open_orders()
+
         # Start the UI update timer (every 500ms)
         self._start_ui_timer()
 
@@ -254,6 +266,109 @@ class TradingUI:
         self.update_execute_button()
         self.update_breakeven_button()
 
+    def _format_trade_info(self, symbol, direction, entry_qty, entry_price, expected_avg,
+                           stop_qty, stop_price, stop_points, max_loss, ladder_orders, title="Orders Placed!"):
+        """Format trade info for display in Execution Log"""
+        stop_action = "SELL" if direction == "LONG" else "BUY"
+
+        ladder_info = ""
+        if ladder_orders:
+            ladder_info = "\n\nLadder Orders:\n" + "\n".join(
+                [f"  - {o['action']} {o['quantity']} {symbol} @ {o['price']:.2f}" for o in ladder_orders]
+            )
+
+        return f"""{title}
+
+Symbol: {symbol}
+Direction: {direction}
+Initial Quantity: {entry_qty} contracts
+Entry Price: {entry_price:.2f}
+Expected Avg (if all fill): {expected_avg:.2f}
+
+Stop Loss:
+{stop_action} {stop_qty} {symbol} @ {stop_price:.2f} (STOP)
+Stop Loss: {stop_points:.2f} points
+Max Loss: ${max_loss:,.0f}
+{ladder_info}
+
+Position will update when orders fill."""
+
+    def _display_open_orders(self):
+        """Display open/resting orders in the Execution Log"""
+        orders = self._run_sync(self.ib_conn.get_open_orders())
+        if not orders:
+            self.update_exec_log("No open orders")
+            return
+
+        # Group orders by symbol
+        by_symbol = {}
+        for o in orders:
+            sym = o["symbol"]
+            if sym not in by_symbol:
+                by_symbol[sym] = {"stops": [], "limits": []}
+            if o["order_type"] == "STP":
+                by_symbol[sym]["stops"].append(o)
+            elif o["order_type"] == "LMT":
+                by_symbol[sym]["limits"].append(o)
+
+        all_info = []
+        multipliers = {"ES": 50.0, "MES": 5.0, "NQ": 20.0, "MNQ": 2.0}
+
+        for sym, sym_orders in by_symbol.items():
+            stops = sym_orders["stops"]
+            limits = sym_orders["limits"]
+
+            # Determine direction from stop order (SELL stop = LONG, BUY stop = SHORT)
+            direction = "LONG" if stops and stops[0]["action"] == "SELL" else "SHORT"
+
+            # Sort limits by price to find entry vs ladder
+            if limits:
+                limits.sort(key=lambda x: x["price"], reverse=(direction == "LONG"))
+                entry_order = limits[0]
+                ladder_orders = limits[1:]
+
+                total_cost = sum(o["price"] * o["quantity"] for o in limits)
+                total_qty = sum(o["quantity"] for o in limits)
+                expected_avg = total_cost / total_qty if total_qty > 0 else entry_order["price"]
+            else:
+                entry_order = {"price": 0, "quantity": 0}
+                ladder_orders = []
+                expected_avg = 0
+
+            # Calculate stop info
+            if stops:
+                stop = stops[0]
+                stop_price = stop["price"]
+                stop_qty = stop["quantity"]
+                multiplier = multipliers.get(sym, 50.0)
+                if direction == "LONG":
+                    stop_points = expected_avg - stop_price
+                else:
+                    stop_points = stop_price - expected_avg
+                max_loss = stop_points * stop_qty * multiplier
+            else:
+                stop_price = 0
+                stop_qty = 0
+                stop_points = 0
+                max_loss = 0
+
+            info = self._format_trade_info(
+                symbol=sym,
+                direction=direction,
+                entry_qty=entry_order["quantity"],
+                entry_price=entry_order["price"],
+                expected_avg=expected_avg,
+                stop_qty=stop_qty,
+                stop_price=stop_price,
+                stop_points=stop_points,
+                max_loss=max_loss,
+                ladder_orders=ladder_orders,
+                title=f"Resting Orders for {sym}"
+            )
+            all_info.append(info)
+
+        self.update_exec_log("\n\n".join(all_info))
+
     def on_symbol_changed(self, *_args):
         """Called when symbol dropdown changes - start monitoring new symbol"""
         if self.ib_conn.connected:
@@ -279,11 +394,9 @@ class TradingUI:
 
             pos_text = "\n".join(positions_info) if positions_info else "No open positions"
 
-            info = f"""
-Positions:
-{pos_text}
-            """
-            self.update_info(info)
+            info = f"""Positions:
+{pos_text}"""
+            self.update_position_info(info)
 
         self.update_flatten_button()
         self.update_execute_button()
@@ -321,7 +434,7 @@ Positions:
 
             # Disable button during execution
             self.execute_btn.config(state="disabled")
-            self.update_info("Executing trade...\n")
+            self.update_exec_log("Executing trade...\n")
 
             # Get selected symbol
             symbol = self.symbol_var.get()
@@ -334,29 +447,25 @@ Positions:
             )
 
             if result["success"]:
-                # Display trade execution info
+                # Calculate max loss
                 sym = result["symbol"]
-                ladder_info = ""
-                if result.get("ladder_orders"):
-                    ladder_info = "\n\nLadder Orders Placed:\n" + "\n".join(
-                        [f"  - {o['action']} {o['quantity']} {sym} @ {o['price']}" for o in result["ladder_orders"]]
-                    )
+                multiplier = {"ES": 50.0, "MES": 5.0, "NQ": 20.0, "MNQ": 2.0}.get(sym, 50.0)
+                max_loss = result["stop_points"] * result["stop_quantity"] * multiplier
 
-                info = f"""
-Trade Executed Successfully!
-
-Symbol: {sym}
-Direction: {result['direction']}
-Initial Quantity: {result['quantity']} contracts
-Initial Fill: {result['fill_price']:.2f}
-Expected Avg (if all fill): {result['expected_avg']:.2f}
-
-Stop Loss Placed:
-{'SELL' if direction == 'LONG' else 'BUY'} {result['stop_quantity']} {sym} @ {result['stop_price']} (STOP)
-Stop Loss: {result['stop_points']} points
-{ladder_info}
-                """
-                self.update_info(info)
+                info = self._format_trade_info(
+                    symbol=sym,
+                    direction=result["direction"],
+                    entry_qty=result["quantity"],
+                    entry_price=result["fill_price"],
+                    expected_avg=result["expected_avg"],
+                    stop_qty=result["stop_quantity"],
+                    stop_price=result["stop_price"],
+                    stop_points=result["stop_points"],
+                    max_loss=max_loss,
+                    ladder_orders=result.get("ladder_orders", []),
+                    title="Orders Placed!"
+                )
+                self.update_exec_log(info)
 
                 # Force button update - keep execute disabled since we have a position
                 self.root.update_idletasks()
@@ -364,7 +473,7 @@ Stop Loss: {result['stop_points']} points
                 self.update_execute_button()
                 print(f"Active long: {self.ib_conn.active_long}, Active short: {self.ib_conn.active_short}")
             else:
-                self.update_info(f"ERROR: {result['message']}\n")
+                self.update_exec_log(f"ERROR: {result['message']}\n")
                 messagebox.showerror("Error", result["message"])
                 # Re-enable button only on failure
                 self.execute_btn.config(state="normal")
@@ -376,11 +485,21 @@ Stop Loss: {result['stop_points']} points
             messagebox.showerror("Error", f"Unexpected error: {str(e)}")
             self.execute_btn.config(state="normal")
 
-    def update_info(self, text):
-        self.info_text.config(state="normal")
-        self.info_text.delete(1.0, tk.END)
-        self.info_text.insert(1.0, text)
-        self.info_text.config(state="disabled")
+    def update_exec_log(self, text):
+        """Update the Execution Log tab"""
+        self.exec_text.config(state="normal")
+        self.exec_text.delete(1.0, tk.END)
+        self.exec_text.insert(1.0, text)
+        self.exec_text.config(state="disabled")
+        self.info_notebook.select(0)  # Switch to Execution Log tab
+
+    def update_position_info(self, text):
+        """Update the Position tab"""
+        self.pos_text.config(state="normal")
+        self.pos_text.delete(1.0, tk.END)
+        self.pos_text.insert(1.0, text)
+        self.pos_text.config(state="disabled")
+        self.info_notebook.select(1)  # Switch to Position tab
 
     def update_execute_button(self, *_args):
         """Update execute button state based on connection and existing positions"""
@@ -473,7 +592,7 @@ Stop Loss: {result['stop_points']} points
     def flatten_position(self):
         """Flatten all positions and cancel resting orders"""
         self.flatten_btn.config(state="disabled")
-        self.update_info("Flattening position...\n")
+        self.update_exec_log("Flattening position...\n")
 
         symbol = self.ib_conn.active_symbol or self.symbol_var.get()
         result = self._run_sync(self.ib_conn.flatten_position(symbol))
@@ -491,15 +610,15 @@ Orders Cancelled: {result['cancelled_orders']}
 
 All positions closed and orders cancelled.
             """
-            self.update_info(info)
+            self.update_exec_log(info)
         else:
-            self.update_info(f"ERROR: {result['message']}\n")
+            self.update_exec_log(f"ERROR: {result['message']}\n")
             messagebox.showerror("Error", result["message"])
 
     def move_stop_to_breakeven(self):
         """Move stop loss to breakeven (average cost)"""
         self.breakeven_btn.config(state="disabled")
-        self.update_info("Moving stop to breakeven...\n")
+        self.update_exec_log("Moving stop to breakeven...\n")
 
         symbol = self.ib_conn.active_symbol
         if not symbol:
@@ -517,9 +636,9 @@ New Stop Price: {result['stop_price']:.2f}
 Stop Quantity: {result['stop_quantity']}
 Orders Cancelled: {result['cancelled_orders']}
             """
-            self.update_info(info)
+            self.update_exec_log(info)
         else:
-            self.update_info(f"ERROR: {result['message']}\n")
+            self.update_exec_log(f"ERROR: {result['message']}\n")
             messagebox.showerror("Error", result["message"])
 
     def on_closing(self):
