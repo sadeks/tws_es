@@ -33,6 +33,10 @@ class TradingUI:
         self.symbol_var.trace_add("write", self.on_symbol_changed)
 
     def create_widgets(self):
+        # Configure grid weights for expansion
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(3, weight=1)  # Info notebook row expands
+
         # Status Frame (at very top)
         status_frame = ttk.Frame(self.root, padding=0)
         status_frame.grid(row=0, column=0, padx=0, pady=(10, 0), sticky="ew")
@@ -125,18 +129,18 @@ class TradingUI:
 
         # Tabbed Info Section
         self.info_notebook = ttk.Notebook(self.root)
-        self.info_notebook.grid(row=3, column=0, padx=10, pady=(10, 2), sticky="ew")
+        self.info_notebook.grid(row=3, column=0, padx=10, pady=10, sticky="nsew")
 
         # Execution Log Tab
         exec_frame = ttk.Frame(self.info_notebook, padding=2)
         self.info_notebook.add(exec_frame, text="Execution Log")
-        self.exec_text = tk.Text(exec_frame, height=8, width=50, state="disabled")
+        self.exec_text = tk.Text(exec_frame, height=8, state="disabled")
         self.exec_text.pack(fill="both", expand=True)
 
         # Position Tab
         pos_frame = ttk.Frame(self.info_notebook, padding=2)
         self.info_notebook.add(pos_frame, text="Position")
-        self.pos_text = tk.Text(pos_frame, height=8, width=50, state="disabled")
+        self.pos_text = tk.Text(pos_frame, height=8, state="disabled")
         self.pos_text.pack(fill="both", expand=True)
 
         # PnL label above the Manage Position section
@@ -266,8 +270,20 @@ class TradingUI:
         self.update_execute_button()
         self.update_breakeven_button()
 
-    def _format_trade_info(self, symbol, direction, entry_qty, entry_price, expected_avg,
-                           stop_qty, stop_price, stop_points, max_loss, ladder_orders, title="Orders Placed!"):
+    def _format_trade_info(
+        self,
+        symbol,
+        direction,
+        entry_qty,
+        entry_price,
+        expected_avg,
+        stop_qty,
+        stop_price,
+        stop_points,
+        max_loss,
+        ladder_orders,
+        title="Orders Placed!",
+    ):
         """Format trade info for display in Execution Log"""
         stop_action = "SELL" if direction == "LONG" else "BUY"
 
@@ -363,7 +379,7 @@ Position will update when orders fill."""
                 stop_points=stop_points,
                 max_loss=max_loss,
                 ladder_orders=ladder_orders,
-                title=f"Resting Orders for {sym}"
+                title=f"Resting Orders for {sym}",
             )
             all_info.append(info)
 
@@ -463,7 +479,7 @@ Position will update when orders fill."""
                     stop_points=result["stop_points"],
                     max_loss=max_loss,
                     ladder_orders=result.get("ladder_orders", []),
-                    title="Orders Placed!"
+                    title="Orders Placed!",
                 )
                 self.update_exec_log(info)
 

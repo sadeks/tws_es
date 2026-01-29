@@ -108,7 +108,7 @@ class TradingUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Futures Trader")
-        self.setFixedSize(475, 780)
+        self.setMinimumSize(475, 780)
 
         self.ib_conn = IBConnection()
         self.loop = asyncio.new_event_loop()
@@ -241,10 +241,10 @@ class TradingUI(QMainWindow):
         info_layout = QVBoxLayout(info_group)
         self.info_text = QTextEdit()
         self.info_text.setReadOnly(True)
-        self.info_text.setFixedHeight(150)
+        self.info_text.setMinimumHeight(150)
         self.info_text.setFont(QFont("Courier", 11))
         info_layout.addWidget(self.info_text)
-        main_layout.addWidget(info_group)
+        main_layout.addWidget(info_group, 1)  # stretch factor of 1 to expand
 
         # Manage Position Frame
         manage_group = QGroupBox("Manage Position")
@@ -273,7 +273,6 @@ class TradingUI(QMainWindow):
         manage_layout.addWidget(self.flatten_btn)
 
         main_layout.addWidget(manage_group)
-        main_layout.addStretch()
 
     def on_direction_changed(self, mode: str):
         self.direction = mode
