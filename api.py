@@ -21,8 +21,9 @@ class IBConnection:
         self.current_quantity = 0
         self.avg_entry_price = 0.0
         self.max_contracts = 0
-        self.ladder_interval = 0
+        self.ladder_steps = []
         self.stop_points = 0
+        self.take_profit_points = 0
         self.direction = None
         self.ladder_orders = []
 
@@ -276,7 +277,7 @@ class IBConnection:
         return trade
 
     async def execute_trade_with_ladder(
-        self, symbol, direction, entry_price, stop_points, quantity, ladder_interval, max_contracts
+        self, symbol, direction, entry_price, stop_points, take_profit_points, quantity, ladder_steps
     ):
         """
         Execute futures trade with ladder system
@@ -286,10 +287,13 @@ class IBConnection:
             direction: 'LONG' or 'SHORT'
             entry_price: Entry price (can be None for market order)
             stop_points: Stop loss in points
+            take_profit_points: Take profit in points
             quantity: Number of contracts for initial trade
-            ladder_interval: Points between each ladder level
-            max_contracts: Maximum number of contracts to accumulate
+            ladder_steps: List of point distances from previous level (e.g., [4, 5, 7.5, 10, 10])
         """
+        # Calculate max contracts from ladder steps
+        num_positions = len(ladder_steps) + 1  # +1 for initial entry
+        max_contracts = num_positions * quantity
         # Get front month contract
         print(f"Finding front month {symbol} contract...")
         contract = await self.get_front_month_contract(symbol)
@@ -301,8 +305,9 @@ class IBConnection:
 
         # Store ladder configuration
         self.max_contracts = max_contracts
-        self.ladder_interval = ladder_interval
+        self.ladder_steps = ladder_steps
         self.stop_points = stop_points
+        self.take_profit_points = take_profit_points
         self.direction = direction
         self.contract = contract
         self.active_symbol = symbol
@@ -333,15 +338,15 @@ class IBConnection:
             self.ladder_orders = []
             ladder_prices = []
 
-            if quantity < max_contracts:
-                remaining_contracts = max_contracts - quantity
-                num_ladder_steps = remaining_contracts // quantity
-
-                for i in range(1, num_ladder_steps + 1):
+            if ladder_steps:
+                # Calculate cumulative distance for each ladder level
+                cumulative_distance = 0
+                for step in ladder_steps:
+                    cumulative_distance += step
                     if direction == "LONG":
-                        ladder_price = fill_price - (i * ladder_interval)
+                        ladder_price = fill_price - cumulative_distance
                     else:
-                        ladder_price = fill_price + (i * ladder_interval)
+                        ladder_price = fill_price + cumulative_distance
                     ladder_price = round(ladder_price * 4) / 4
                     ladder_prices.append(ladder_price)
 

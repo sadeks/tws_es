@@ -10,12 +10,13 @@ class TradingUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Futures Trader")
-        self.root.geometry("475x780")
+        self.root.geometry("420x780")
         self.root.resizable(True, True)
 
         self.ib_conn = IBConnection()
         self.loop = None
         self.ib_thread = None
+        self._flattening = False  # Flag to prevent multiple flatten calls
 
         self.create_widgets()
         self.update_flatten_button()
@@ -23,9 +24,8 @@ class TradingUI:
         # Trace variables to update max loss display
         self.symbol_var.trace_add("write", self.update_max_loss)
         self.stop_points_var.trace_add("write", self.update_max_loss)
-        self.max_contracts_var.trace_add("write", self.update_max_loss)
         self.quantity_var.trace_add("write", self.update_max_loss)
-        self.ladder_interval_var.trace_add("write", self.update_max_loss)
+        self.ladder_steps_var.trace_add("write", self.update_max_loss)
         self.update_max_loss()
 
         # Trace symbol to update execute button and start monitoring
@@ -33,20 +33,48 @@ class TradingUI:
         self.symbol_var.trace_add("write", self.on_symbol_changed)
 
     def create_widgets(self):
-        # Configure grid weights for expansion
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(3, weight=1)  # Info notebook row expands
+        # Use pack layout - bottom section first to keep it visible when shrinking
+
+        # Bottom section (Manage Position) - pack first so it stays visible
+        bottom_frame = ttk.Frame(self.root)
+        bottom_frame.pack(side="bottom", fill="x", padx=10, pady=(0, 10))
+
+        # PnL label
+        self.pnl_label = tk.Label(bottom_frame, text="", font=("Arial", 12, "bold"))
+        self.pnl_label.pack(pady=(0, 5))
+
+        # Close Position Frame
+        self.close_frame = ttk.LabelFrame(bottom_frame, text="Manage Position", padding=10)
+        self.close_frame.pack(fill="x")
+
+        # Button container for side-by-side layout
+        btn_frame = ttk.Frame(self.close_frame)
+        btn_frame.pack(fill="x")
+
+        self.breakeven_btn = ttk.Button(
+            btn_frame, text="Move Stop to Breakeven", command=self.move_stop_to_breakeven, state="disabled"
+        )
+        self.breakeven_btn.pack(side="left")
+
+        self.flatten_btn = ttk.Button(
+            btn_frame, text="Flatten Position", command=self.flatten_position, state="disabled"
+        )
+        self.flatten_btn.pack(side="right")
+
+        # Top section container
+        top_frame = ttk.Frame(self.root)
+        top_frame.pack(side="top", fill="x")
 
         # Status Frame (at very top)
-        status_frame = ttk.Frame(self.root, padding=0)
-        status_frame.grid(row=0, column=0, padx=0, pady=(10, 0), sticky="ew")
+        status_frame = ttk.Frame(top_frame, padding=0)
+        status_frame.pack(fill="x", padx=0, pady=(10, 0))
 
         self.status_label = ttk.Label(status_frame, text="Not Connected", foreground="red")
         self.status_label.pack()
 
         # Connection Frame
-        conn_frame = ttk.LabelFrame(self.root, text="Connection", padding=10)
-        conn_frame.grid(row=1, column=0, padx=10, pady=10, sticky="ew")
+        conn_frame = ttk.LabelFrame(top_frame, text="Connection", padding=10)
+        conn_frame.pack(fill="x", padx=10, pady=10)
 
         self.connect_btn = ttk.Button(conn_frame, text="Connect", command=self.connect)
         self.connect_btn.pack(side="left", padx=5)
@@ -57,12 +85,12 @@ class TradingUI:
         self.refresh_btn.pack(side="right", padx=5)
 
         # Trading Frame
-        trade_frame = ttk.LabelFrame(self.root, text="Trade Futures", padding=10)
-        trade_frame.grid(row=2, column=0, padx=10, pady=10, sticky="ew")
+        trade_frame = ttk.LabelFrame(top_frame, text="Trade Futures", padding=10)
+        trade_frame.pack(fill="x", padx=10, pady=10)
 
         # Symbol Selection
         ttk.Label(trade_frame, text="Symbol:").grid(row=0, column=0, sticky="w", pady=5)
-        self.symbol_var = tk.StringVar(value="ES")
+        self.symbol_var = tk.StringVar(value="MES")
         self.symbol_combo = ttk.Combobox(
             trade_frame, textvariable=self.symbol_var, values=["ES", "MES", "NQ", "MNQ"], state="readonly", width=10
         )
@@ -78,7 +106,7 @@ class TradingUI:
 
         # Quantity
         ttk.Label(trade_frame, text="Quantity:").grid(row=2, column=0, sticky="w", pady=5)
-        self.quantity_var = tk.StringVar(value="1")
+        self.quantity_var = tk.StringVar(value="5")
         self.quantity_entry = ttk.Entry(trade_frame, textvariable=self.quantity_var, width=12)
         self.quantity_entry.grid(row=2, column=1, sticky="w", pady=5)
 
@@ -91,11 +119,23 @@ class TradingUI:
         self.entry_price_entry.pack(side="left")
         ttk.Label(entry_frame, text="(leave empty for market)").pack(side="left", padx=5)
 
+        # Ladder
+        ttk.Label(trade_frame, text="Ladder (pts):").grid(row=4, column=0, sticky="w", pady=5)
+        self.ladder_steps_var = tk.StringVar(value="4, 6, 8")
+        self.ladder_steps_entry = ttk.Entry(trade_frame, textvariable=self.ladder_steps_var, width=12)
+        self.ladder_steps_entry.grid(row=4, column=1, sticky="w", pady=5)
+
+        # Ladder info row (under ladder steps)
+        ladder_info_frame = ttk.Frame(trade_frame)
+        ladder_info_frame.grid(row=5, column=0, columnspan=2, pady=(0, 5))
+        self.ladder_info_label = ttk.Label(ladder_info_frame, text="", foreground="white")
+        self.ladder_info_label.pack()
+
         # Stop Loss Points
-        ttk.Label(trade_frame, text="Stop Loss (pts):").grid(row=4, column=0, sticky="w", pady=5)
-        self.stop_points_var = tk.StringVar(value="10")
+        ttk.Label(trade_frame, text="Stop Loss (pts):").grid(row=6, column=0, sticky="w", pady=5)
+        self.stop_points_var = tk.StringVar(value="15")
         stop_frame = ttk.Frame(trade_frame)
-        stop_frame.grid(row=4, column=1, sticky="w", pady=5)
+        stop_frame.grid(row=6, column=1, sticky="w", pady=5)
         self.stop_entry = ttk.Entry(stop_frame, textvariable=self.stop_points_var, width=12)
         self.stop_entry.pack(side="left")
         self.min_stop_label = ttk.Label(stop_frame, text="", foreground="orange")
@@ -103,33 +143,19 @@ class TradingUI:
         self.max_loss_label = ttk.Label(stop_frame, text="Max loss: N/A", foreground="red")
         self.max_loss_label.pack(side="left")
 
-        # Ladder Interval
-        ttk.Label(trade_frame, text="Ladder Interval (pts):").grid(row=5, column=0, sticky="w", pady=5)
-        self.ladder_interval_var = tk.StringVar(value="5")
-        ladder_frame = ttk.Frame(trade_frame)
-        ladder_frame.grid(row=5, column=1, sticky="w", pady=5)
-        self.ladder_interval_entry = ttk.Entry(ladder_frame, textvariable=self.ladder_interval_var, width=12)
-        self.ladder_interval_entry.pack(side="left")
-        self.full_ladder_label = ttk.Label(ladder_frame, text="Full ladder: N/A", foreground="white")
-        self.full_ladder_label.pack(side="left", padx=5)
-
-        # Max Contracts
-        ttk.Label(trade_frame, text="Max Contracts:").grid(row=6, column=0, sticky="w", pady=5)
-        self.max_contracts_var = tk.StringVar(value="3")
-        max_frame = ttk.Frame(trade_frame)
-        max_frame.grid(row=6, column=1, sticky="w", pady=5)
-        self.max_contracts_entry = ttk.Entry(max_frame, textvariable=self.max_contracts_var, width=12)
-        self.max_contracts_entry.pack(side="left")
-        self.room_label = ttk.Label(max_frame, text="Room after last: N/A", foreground="white")
-        self.room_label.pack(side="left", padx=5)
+        # Take Profit Points
+        ttk.Label(trade_frame, text="Take Profit (pts):").grid(row=7, column=0, sticky="w", pady=5)
+        self.take_profit_var = tk.StringVar(value="10")
+        self.take_profit_entry = ttk.Entry(trade_frame, textvariable=self.take_profit_var, width=12)
+        self.take_profit_entry.grid(row=7, column=1, sticky="w", pady=5)
 
         # Execute Button
         self.execute_btn = ttk.Button(trade_frame, text="EXECUTE TRADE", command=self.execute_trade, state="disabled")
-        self.execute_btn.grid(row=7, column=0, columnspan=2, pady=15)
+        self.execute_btn.grid(row=8, column=0, columnspan=2, pady=15)
 
-        # Tabbed Info Section
+        # Tabbed Info Section (fills remaining space in middle)
         self.info_notebook = ttk.Notebook(self.root)
-        self.info_notebook.grid(row=3, column=0, padx=10, pady=10, sticky="nsew")
+        self.info_notebook.pack(side="top", fill="both", expand=True, padx=10, pady=10)
 
         # Execution Log Tab
         exec_frame = ttk.Frame(self.info_notebook, padding=2)
@@ -142,30 +168,6 @@ class TradingUI:
         self.info_notebook.add(pos_frame, text="Position")
         self.pos_text = tk.Text(pos_frame, height=8, state="disabled")
         self.pos_text.pack(fill="both", expand=True)
-
-        # PnL label above the Manage Position section
-        pnl_frame = ttk.Frame(self.root)
-        pnl_frame.grid(row=4, column=0, padx=10, pady=(2, 0), sticky="ew")
-        self.pnl_label = tk.Label(pnl_frame, text="", font=("Arial", 12, "bold"))
-        self.pnl_label.pack()
-
-        # Close Position Frame
-        self.close_frame = ttk.LabelFrame(self.root, text="Manage Position", padding=10)
-        self.close_frame.grid(row=5, column=0, padx=10, pady=(0, 10), sticky="ew")
-
-        # Button container for side-by-side layout
-        btn_frame = ttk.Frame(self.close_frame)
-        btn_frame.pack(fill="x")
-
-        self.breakeven_btn = ttk.Button(
-            btn_frame, text="Move Stop to Breakeven", command=self.move_stop_to_breakeven, state="disabled"
-        )
-        self.breakeven_btn.pack(side="left")
-
-        self.flatten_btn = ttk.Button(
-            btn_frame, text="Flatten Position", command=self.flatten_position, state="disabled"
-        )
-        self.flatten_btn.pack(side="right")
 
     def _run_event_loop(self):
         """Run the asyncio event loop in a background thread"""
@@ -236,6 +238,28 @@ class TradingUI:
         self._update_ui_from_cache()
         self.root.after(500, self._start_ui_timer)
 
+    async def _auto_flatten(self, symbol):
+        """Auto-flatten position when take profit is hit"""
+        try:
+            result = await self.ib_conn.flatten_position(symbol)
+            if result["success"]:
+                closed_list = "\n".join(result.get("closed_contracts", []))
+                info = f"""
+Take Profit Hit! Position Flattened!
+
+Closed Contracts:
+{closed_list}
+
+Average Fill: {result['close_price']:.2f}
+Orders Cancelled: {result['cancelled_orders']}
+"""
+                self.root.after(0, lambda: self.update_exec_log(info))
+            else:
+                self.root.after(0, lambda: self.update_exec_log(f"ERROR: {result['message']}\n"))
+        finally:
+            self._flattening = False
+            self.ib_conn.take_profit_points = 0  # Reset take profit after flatten
+
     def _update_ui_from_cache(self):
         """Update UI elements from cached values (called by timer)"""
         if not self.ib_conn.connected:
@@ -262,6 +286,21 @@ class TradingUI:
                 self.pnl_label.config(text=f"PNL +${pnl:,.0f}", fg="green")
             else:
                 self.pnl_label.config(text=f"PNL -${abs(pnl):,.0f}", fg="red")
+
+            # Check if take profit is hit
+            take_profit_points = self.ib_conn.take_profit_points
+            if take_profit_points > 0 and not getattr(self, '_flattening', False):
+                tp_hit = False
+                if self.ib_conn.active_long and current_price >= avg_price + take_profit_points:
+                    tp_hit = True
+                elif self.ib_conn.active_short and current_price <= avg_price - take_profit_points:
+                    tp_hit = True
+
+                if tp_hit:
+                    self._flattening = True
+                    print(f"Take profit hit! Flattening position...")
+                    self.update_exec_log("Take profit hit! Flattening position...\n")
+                    self._schedule(self._auto_flatten(symbol))
         else:
             self.pnl_label.config(text="")
 
@@ -418,6 +457,15 @@ Position will update when orders fill."""
         self.update_execute_button()
         self.update_breakeven_button()
 
+    def _parse_ladder_steps(self, ladder_str):
+        """Parse comma-separated ladder steps into a list of floats"""
+        steps = []
+        for s in ladder_str.split(","):
+            s = s.strip()
+            if s:
+                steps.append(float(s))
+        return steps
+
     def execute_trade(self):
         if not self.ib_conn.connected:
             messagebox.showerror("Error", "Not connected to IB")
@@ -429,8 +477,8 @@ Position will update when orders fill."""
             entry_price_str = self.entry_price_var.get().strip()
             entry_price = float(entry_price_str) if entry_price_str else None
             stop_points = float(self.stop_points_var.get())
-            ladder_interval = float(self.ladder_interval_var.get())
-            max_contracts = int(self.max_contracts_var.get())
+            take_profit_points = float(self.take_profit_var.get())
+            ladder_steps = self._parse_ladder_steps(self.ladder_steps_var.get())
 
             if quantity <= 0:
                 messagebox.showerror("Error", "Quantity must be greater than 0")
@@ -440,12 +488,12 @@ Position will update when orders fill."""
                 messagebox.showerror("Error", "Stop loss must be greater than 0")
                 return
 
-            if ladder_interval <= 0:
-                messagebox.showerror("Error", "Ladder interval must be greater than 0")
+            if take_profit_points <= 0:
+                messagebox.showerror("Error", "Take profit must be greater than 0")
                 return
 
-            if max_contracts <= 0:
-                messagebox.showerror("Error", "Max contracts must be greater than 0")
+            if not ladder_steps:
+                messagebox.showerror("Error", "At least one ladder step is required")
                 return
 
             # Disable button during execution
@@ -458,7 +506,7 @@ Position will update when orders fill."""
             # Execute trade
             result = self._run_sync(
                 self.ib_conn.execute_trade_with_ladder(
-                    symbol, direction, entry_price, stop_points, quantity, ladder_interval, max_contracts
+                    symbol, direction, entry_price, stop_points, take_profit_points, quantity, ladder_steps
                 )
             )
 
@@ -563,24 +611,34 @@ Position will update when orders fill."""
             self.breakeven_btn.config(state="disabled")
 
     def update_max_loss(self, *_args):
-        """Calculate and display max loss based on symbol, stop points, and max contracts"""
+        """Calculate and display max loss based on symbol, stop points, and ladder steps"""
         multipliers = {"ES": 50.0, "MES": 5.0, "NQ": 20.0, "MNQ": 2.0}
         try:
             symbol = self.symbol_var.get()
             stop_points = float(self.stop_points_var.get())
-            max_contracts = int(self.max_contracts_var.get())
             quantity = int(self.quantity_var.get())
-            ladder_interval = float(self.ladder_interval_var.get())
+            ladder_steps = self._parse_ladder_steps(self.ladder_steps_var.get())
             multiplier = multipliers.get(symbol, 50.0)
 
-            # Calculate minimum stop loss needed
-            # num_ladders = how many additional entries after initial
-            num_ladders = (max_contracts - quantity) // quantity
-            # Min stop = distance from expected avg to lowest ladder + buffer
-            # Expected avg is at: entry - (ladder_interval * num_ladders) / 2
-            # Lowest ladder is at: entry - (ladder_interval * num_ladders)
-            # Distance = (ladder_interval * num_ladders) / 2
-            min_stop = (ladder_interval * num_ladders) / 2 + 0.25
+            # Calculate max contracts: (number of ladder steps + 1 for initial) × quantity
+            num_positions = len(ladder_steps) + 1
+            max_contracts = num_positions * quantity
+
+            # Calculate cumulative distances for each ladder level
+            cumulative_distances = []
+            cumsum = 0
+            for step in ladder_steps:
+                cumsum += step
+                cumulative_distances.append(cumsum)
+
+            # Full ladder = total distance from entry to last ladder
+            full_ladder = cumsum
+
+            # Average distance from entry (entry is at 0, then each ladder at cumulative distance)
+            avg_distance = sum(cumulative_distances) / num_positions if num_positions > 0 else 0
+
+            # Calculate minimum stop loss needed (must be greater than distance from avg to last ladder)
+            min_stop = (full_ladder - avg_distance) + 0.25
 
             max_loss = stop_points * max_contracts * multiplier
 
@@ -592,18 +650,25 @@ Position will update when orders fill."""
                 self.min_stop_label.config(text="")
                 self.max_loss_label.config(text=f"Max loss: ${max_loss:,.0f}")
 
-            # Calculate ladder distance info
-            ladder_span = ladder_interval * num_ladders
-            room_after_last = stop_points - (ladder_span / 2)
-            full_ladder = (ladder_span / 2) + stop_points
+            # Room after last = distance from last ladder to stop
+            # Stop is placed at: expected_avg ± stop_points
+            # Expected avg is at: entry ± avg_distance
+            # Last ladder is at: entry ± full_ladder
+            # Room = stop_points - (full_ladder - avg_distance)
+            room_after_last = stop_points - (full_ladder - avg_distance)
+            room_after_last = round(room_after_last * 4) / 4  # Round to 0.25 increments
 
-            self.room_label.config(text=f"Room after last: {room_after_last:.1f} pts")
-            self.full_ladder_label.config(text=f"Full ladder: {full_ladder:.1f} pts")
+            # Total ladder span = distance from entry to stop
+            total_ladder = avg_distance + stop_points
+
+            # Update ladder info label with all relevant info
+            self.ladder_info_label.config(
+                text=f"Ladder: {total_ladder:.2f} pts | Max Cons: {max_contracts} | Stoploss Room: {room_after_last:.2f} pts"
+            )
         except (ValueError, AttributeError):
             self.min_stop_label.config(text="")
             self.max_loss_label.config(text="")
-            self.room_label.config(text="Room after last: N/A")
-            self.full_ladder_label.config(text="Full ladder: N/A")
+            self.ladder_info_label.config(text="")
 
     def flatten_position(self):
         """Flatten all positions and cancel resting orders"""
@@ -612,6 +677,9 @@ Position will update when orders fill."""
 
         symbol = self.ib_conn.active_symbol or self.symbol_var.get()
         result = self._run_sync(self.ib_conn.flatten_position(symbol))
+
+        # Reset take profit after flatten
+        self.ib_conn.take_profit_points = 0
 
         if result["success"]:
             closed_list = "\n".join(result.get("closed_contracts", []))
