@@ -10,7 +10,7 @@ class TradingUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Futures Trader")
-        self.root.geometry("420x780")
+        self.root.geometry("430x780")
         self.root.resizable(True, True)
 
         self.ib_conn = IBConnection()
@@ -51,8 +51,10 @@ class TradingUI:
         btn_frame = ttk.Frame(self.close_frame)
         btn_frame.pack(fill="x")
 
-        self.remove_tp_btn = ttk.Button(btn_frame, text="Remove TP", command=self.remove_take_profit, state="disabled")
-        self.remove_tp_btn.pack(side="left")
+        self.breakeven_btn = ttk.Button(
+            btn_frame, text="Move Stop to Breakeven", command=self.move_stop_to_breakeven, state="disabled"
+        )
+        self.breakeven_btn.pack(side="left")
 
         self.flatten_btn = ttk.Button(
             btn_frame, text="Flatten Position", command=self.flatten_position, state="disabled"
@@ -123,17 +125,11 @@ class TradingUI:
         self.ladder_steps_entry = ttk.Entry(trade_frame, textvariable=self.ladder_steps_var, width=12)
         self.ladder_steps_entry.grid(row=4, column=1, sticky="w", pady=5)
 
-        # Ladder info row (under ladder steps)
-        ladder_info_frame = ttk.Frame(trade_frame)
-        ladder_info_frame.grid(row=5, column=0, columnspan=2, pady=(0, 5))
-        self.ladder_info_label = ttk.Label(ladder_info_frame, text="", foreground="white")
-        self.ladder_info_label.pack()
-
         # Stop Loss Points
-        ttk.Label(trade_frame, text="Stop Loss (pts):").grid(row=6, column=0, sticky="w", pady=5)
+        ttk.Label(trade_frame, text="Stop Loss (pts):").grid(row=5, column=0, sticky="w", pady=5)
         self.stop_points_var = tk.StringVar(value="10.75")
         stop_frame = ttk.Frame(trade_frame)
-        stop_frame.grid(row=6, column=1, sticky="w", pady=5)
+        stop_frame.grid(row=5, column=1, sticky="w", pady=5)
         self.stop_entry = ttk.Entry(stop_frame, textvariable=self.stop_points_var, width=12)
         self.stop_entry.pack(side="left")
         self.min_stop_label = ttk.Label(stop_frame, text="", foreground="orange")
@@ -141,11 +137,22 @@ class TradingUI:
         self.max_loss_label = ttk.Label(stop_frame, text="Max loss: N/A", foreground="red")
         self.max_loss_label.pack(side="left")
 
-        # Take Profit Points
-        ttk.Label(trade_frame, text="Take Profit (pts):").grid(row=7, column=0, sticky="w", pady=5)
-        self.take_profit_var = tk.StringVar(value="10")
-        self.take_profit_entry = ttk.Entry(trade_frame, textvariable=self.take_profit_var, width=12)
-        self.take_profit_entry.grid(row=7, column=1, sticky="w", pady=5)
+        # Ladder info row
+        ladder_info_frame = ttk.Frame(trade_frame)
+        ladder_info_frame.grid(row=6, column=0, columnspan=2, pady=(0, 5))
+        self.ladder_info_label = ttk.Label(ladder_info_frame, text="", foreground="white")
+        self.ladder_info_label.pack()
+
+        # Target points with Take Profit checkbox
+        ttk.Label(trade_frame, text="Target (pts):").grid(row=7, column=0, sticky="w", pady=5)
+        target_frame = ttk.Frame(trade_frame)
+        target_frame.grid(row=7, column=1, sticky="w", pady=5)
+        self.target_points_var = tk.StringVar(value="6")
+        self.target_entry = ttk.Entry(target_frame, textvariable=self.target_points_var, width=5)
+        self.target_entry.pack(side="left")
+        self.tp_enabled_var = tk.BooleanVar(value=True)
+        self.tp_checkbox = ttk.Checkbutton(target_frame, text="Take Profit", variable=self.tp_enabled_var)
+        self.tp_checkbox.pack(side="left", padx=(10, 0))
 
         # Execute Button
         self.execute_btn = ttk.Button(trade_frame, text="EXECUTE TRADE", command=self.execute_trade, state="disabled")
@@ -256,7 +263,6 @@ Orders Cancelled: {result['cancelled_orders']}
                 self.root.after(0, lambda: self.update_exec_log(f"ERROR: {result['message']}\n"))
         finally:
             self._flattening = False
-            self.ib_conn.take_profit_points = 0  # Reset take profit after flatten
 
     def _update_ui_from_cache(self):
         """Update UI elements from cached values (called by timer)"""
@@ -277,24 +283,25 @@ Orders Cancelled: {result['cancelled_orders']}
 
             if self.ib_conn.active_long:
                 pnl = (current_price - avg_price) * qty * multiplier
+                points = current_price - avg_price
             else:  # short
                 pnl = (avg_price - current_price) * qty * multiplier
+                points = avg_price - current_price
 
             if pnl >= 0:
-                self.pnl_label.config(text=f"PNL +${pnl:,.0f}", fg="green")
+                self.pnl_label.config(text=f"PNL +${pnl:,.0f} ({points:.1f} pts)", fg="green")
             else:
-                self.pnl_label.config(text=f"PNL -${abs(pnl):,.0f}", fg="red")
+                self.pnl_label.config(text=f"PNL -${abs(pnl):,.0f} ({points:.1f} pts)", fg="red")
+
+            # Get target points value
+            try:
+                target_points = float(self.target_points_var.get())
+            except ValueError:
+                target_points = 0
 
             # Check if take profit is hit
-            take_profit_points = self.ib_conn.take_profit_points
-            if take_profit_points > 0 and not getattr(self, "_flattening", False):
-                tp_hit = False
-                if self.ib_conn.active_long and current_price >= avg_price + take_profit_points:
-                    tp_hit = True
-                elif self.ib_conn.active_short and current_price <= avg_price - take_profit_points:
-                    tp_hit = True
-
-                if tp_hit:
+            if target_points > 0 and self.tp_enabled_var.get() and not self._flattening:
+                if points >= target_points:
                     self._flattening = True
                     print("Take profit hit! Flattening position...")
                     self.update_exec_log("Take profit hit! Flattening position...\n")
@@ -305,7 +312,13 @@ Orders Cancelled: {result['cancelled_orders']}
         # Update button states
         self.update_flatten_button()
         self.update_execute_button()
-        self.update_remove_tp_button()
+        self.update_breakeven_button()
+
+        # Disable target entry when in a trade
+        if self.ib_conn.active_long or self.ib_conn.active_short:
+            self.target_entry.config(state="disabled")
+        else:
+            self.target_entry.config(state="normal")
 
     def _format_trade_info(
         self,
@@ -453,7 +466,7 @@ Position will update when orders fill."""
 
         self.update_flatten_button()
         self.update_execute_button()
-        self.update_remove_tp_button()
+        self.update_breakeven_button()
 
     def _parse_ladder_steps(self, ladder_str):
         """Parse comma-separated ladder steps into a list of floats"""
@@ -475,7 +488,6 @@ Position will update when orders fill."""
             entry_price_str = self.entry_price_var.get().strip()
             entry_price = float(entry_price_str) if entry_price_str else None
             stop_points = float(self.stop_points_var.get())
-            take_profit_points = float(self.take_profit_var.get())
             ladder_steps = self._parse_ladder_steps(self.ladder_steps_var.get())
 
             if quantity <= 0:
@@ -484,10 +496,6 @@ Position will update when orders fill."""
 
             if stop_points <= 0:
                 messagebox.showerror("Error", "Stop loss must be greater than 0")
-                return
-
-            if take_profit_points <= 0:
-                messagebox.showerror("Error", "Take profit must be greater than 0")
                 return
 
             if not ladder_steps:
@@ -504,7 +512,7 @@ Position will update when orders fill."""
             # Execute trade
             result = self._run_sync(
                 self.ib_conn.execute_trade_with_ladder(
-                    symbol, direction, entry_price, stop_points, take_profit_points, quantity, ladder_steps
+                    symbol, direction, entry_price, stop_points, quantity, ladder_steps
                 )
             )
 
@@ -581,12 +589,31 @@ Position will update when orders fill."""
         else:
             self.flatten_btn.config(state="disabled")
 
-    def update_remove_tp_button(self):
-        """Update remove TP button state - only enable if there's an active take profit"""
-        if self.ib_conn.take_profit_points > 0:
-            self.remove_tp_btn.config(state="normal")
+    def update_breakeven_button(self):
+        """Update breakeven button state - only enable if price is favorable"""
+        if not (self.ib_conn.active_long or self.ib_conn.active_short):
+            self.breakeven_btn.config(state="disabled")
+            return
+
+        symbol = self.ib_conn.active_symbol
+        if not symbol:
+            self.breakeven_btn.config(state="disabled")
+            return
+
+        current_price = self.ib_conn.current_price
+        avg_price = self.ib_conn.avg_entry_price
+
+        if not current_price or avg_price <= 0:
+            self.breakeven_btn.config(state="disabled")
+            return
+
+        # Enable only if price is favorable for breakeven
+        if self.ib_conn.active_long and current_price > avg_price:
+            self.breakeven_btn.config(state="normal")
+        elif self.ib_conn.active_short and current_price < avg_price:
+            self.breakeven_btn.config(state="normal")
         else:
-            self.remove_tp_btn.config(state="disabled")
+            self.breakeven_btn.config(state="disabled")
 
     def update_max_loss(self, *_args):
         """Calculate and display max loss based on symbol, stop points, and ladder steps"""
@@ -656,9 +683,6 @@ Position will update when orders fill."""
         symbol = self.ib_conn.active_symbol or self.symbol_var.get()
         result = self._run_sync(self.ib_conn.flatten_position(symbol))
 
-        # Reset take profit after flatten
-        self.ib_conn.take_profit_points = 0
-
         if result["success"]:
             closed_list = "\n".join(result.get("closed_contracts", []))
             info = f"""
@@ -677,11 +701,31 @@ All positions closed and orders cancelled.
             self.update_exec_log(f"ERROR: {result['message']}\n")
             messagebox.showerror("Error", result["message"])
 
-    def remove_take_profit(self):
-        """Remove the take profit so the trade can run"""
-        self.ib_conn.take_profit_points = 0
-        self.remove_tp_btn.config(state="disabled")
-        self.update_exec_log("Take profit removed. Trade will run until manually flattened or stop hit.\n")
+    def move_stop_to_breakeven(self):
+        """Move stop loss to breakeven (average cost)"""
+        self.breakeven_btn.config(state="disabled")
+        self.update_exec_log("Moving stop to breakeven...\n")
+
+        symbol = self.ib_conn.active_symbol
+        if not symbol:
+            messagebox.showerror("Error", "No active position")
+            return
+
+        result = self._run_sync(self.ib_conn.move_stop_to_breakeven(symbol))
+
+        if result["success"]:
+            info = f"""
+Stop Moved to Breakeven!
+
+Symbol: {result['symbol']}
+New Stop Price: {result['stop_price']:.2f}
+Stop Quantity: {result['stop_quantity']}
+Orders Cancelled: {result['cancelled_orders']}
+            """
+            self.update_exec_log(info)
+        else:
+            self.update_exec_log(f"ERROR: {result['message']}\n")
+            messagebox.showerror("Error", result["message"])
 
     def on_closing(self):
         if self.ib_conn.connected:

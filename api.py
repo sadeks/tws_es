@@ -23,7 +23,6 @@ class IBConnection:
         self.max_contracts = 0
         self.ladder_steps = []
         self.stop_points = 0
-        self.take_profit_points = 0
         self.direction = None
         self.ladder_orders = []
 
@@ -277,7 +276,7 @@ class IBConnection:
         return trade
 
     async def execute_trade_with_ladder(
-        self, symbol, direction, entry_price, stop_points, take_profit_points, quantity, ladder_steps
+        self, symbol, direction, entry_price, stop_points, quantity, ladder_steps
     ):
         """
         Execute futures trade with ladder system
@@ -287,7 +286,6 @@ class IBConnection:
             direction: 'LONG' or 'SHORT'
             entry_price: Entry price (can be None for market order)
             stop_points: Stop loss in points
-            take_profit_points: Take profit in points
             quantity: Number of contracts for initial trade
             ladder_steps: List of point distances from previous level (e.g., [4, 5, 7.5, 10, 10])
         """
@@ -307,7 +305,6 @@ class IBConnection:
         self.max_contracts = max_contracts
         self.ladder_steps = ladder_steps
         self.stop_points = stop_points
-        self.take_profit_points = take_profit_points
         self.direction = direction
         self.contract = contract
         self.active_symbol = symbol
@@ -449,20 +446,16 @@ class IBConnection:
             print(f"Error getting current price: {e}")
             return None
 
-    async def move_stop_to_breakeven(self, symbol):
+    async def move_stop_to_price(self, symbol, target_price):
         """
-        Cancel all resting orders and place new stop at average cost (breakeven)
+        Cancel all resting orders and place new stop at target price
 
         Args:
             symbol: 'ES', 'MES', 'NQ', or 'MNQ'
+            target_price: Price to place the new stop at
         """
         try:
-            print(f"\n=== Moving Stop to Breakeven for {symbol} ===")
-
-            # Use cached average entry price
-            avg_price = self.avg_entry_price
-            if avg_price <= 0:
-                return {"success": False, "message": "Could not get average entry price"}
+            print(f"\n=== Moving Stop to {target_price} for {symbol} ===")
 
             # Get position quantity and direction
             positions = self.ib.positions()
@@ -490,8 +483,8 @@ class IBConnection:
             # Wait for cancellations to process
             await asyncio.sleep(0.5)
 
-            # Place new stop at breakeven (average price)
-            stop_price = round(avg_price * 4) / 4  # Round to tick size
+            # Place new stop at target price
+            stop_price = round(target_price * 4) / 4  # Round to tick size
 
             if position_qty > 0:
                 # Long position - stop is a SELL
@@ -502,7 +495,7 @@ class IBConnection:
                 stop_action = "BUY"
                 stop_qty = abs(position_qty)
 
-            print(f"Placing breakeven stop: {stop_action} {stop_qty} {symbol} @ {stop_price}")
+            print(f"Placing stop: {stop_action} {stop_qty} {symbol} @ {stop_price}")
             await self.place_stop_order(position_contract, stop_action, stop_qty, stop_price)
 
             return {
@@ -514,7 +507,19 @@ class IBConnection:
             }
 
         except Exception as e:
-            return {"success": False, "message": f"Error moving stop to breakeven: {str(e)}"}
+            return {"success": False, "message": f"Error moving stop: {str(e)}"}
+
+    async def move_stop_to_breakeven(self, symbol):
+        """
+        Cancel all resting orders and place new stop at average cost (breakeven)
+
+        Args:
+            symbol: 'ES', 'MES', 'NQ', or 'MNQ'
+        """
+        avg_price = self.avg_entry_price
+        if avg_price <= 0:
+            return {"success": False, "message": "Could not get average entry price"}
+        return await self.move_stop_to_price(symbol, avg_price)
 
     async def flatten_position(self, symbol):
         """
