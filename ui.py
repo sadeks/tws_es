@@ -121,13 +121,13 @@ class TradingUI:
 
         # Ladder
         ttk.Label(trade_frame, text="Ladder (pts):").grid(row=4, column=0, sticky="w", pady=5)
-        self.ladder_steps_var = tk.StringVar(value="2, 3, 5")
+        self.ladder_steps_var = tk.StringVar(value="3, 5, 7")  # try 2,4,8 with 10.50 stplss
         self.ladder_steps_entry = ttk.Entry(trade_frame, textvariable=self.ladder_steps_var, width=12)
         self.ladder_steps_entry.grid(row=4, column=1, sticky="w", pady=5)
 
         # Stop Loss Points
         ttk.Label(trade_frame, text="Stop Loss (pts):").grid(row=5, column=0, sticky="w", pady=5)
-        self.stop_points_var = tk.StringVar(value="10.75")
+        self.stop_points_var = tk.StringVar(value="10.50")
         stop_frame = ttk.Frame(trade_frame)
         stop_frame.grid(row=5, column=1, sticky="w", pady=5)
         self.stop_entry = ttk.Entry(stop_frame, textvariable=self.stop_points_var, width=12)
@@ -278,20 +278,22 @@ Orders Cancelled: {result['cancelled_orders']}
             symbol = self.ib_conn.active_symbol
             current_price = self.ib_conn.current_price
             avg_price = self.ib_conn.avg_entry_price
-            qty = self.ib_conn.current_quantity
-            multiplier = self.ib_conn.MULTIPLIERS.get(symbol, 50.0)
+            # qty = self.ib_conn.current_quantity
+            # multiplier = self.ib_conn.MULTIPLIERS.get(symbol, 50.0)
 
             if self.ib_conn.active_long:
-                pnl = (current_price - avg_price) * qty * multiplier
+                # pnl = (current_price - avg_price) * qty * multiplier
                 points = current_price - avg_price
             else:  # short
-                pnl = (avg_price - current_price) * qty * multiplier
+                # pnl = (avg_price - current_price) * qty * multiplier
                 points = avg_price - current_price
 
-            if pnl >= 0:
-                self.pnl_label.config(text=f"PNL +${pnl:,.0f} ({points:.1f} pts)", fg="green")
+            if points >= 0:
+                # self.pnl_label.config(text=f"PNL +${pnl:,.0f} ({points:.1f} pts)", fg="green")
+                self.pnl_label.config(text=f"+{points:.1f} pts", fg="green")
             else:
-                self.pnl_label.config(text=f"PNL -${abs(pnl):,.0f} ({points:.1f} pts)", fg="red")
+                # self.pnl_label.config(text=f"PNL -${abs(pnl):,.0f} ({points:.1f} pts)", fg="red")
+                self.pnl_label.config(text=f"{points:.1f} pts", fg="red")
 
             # Get target points value
             try:
