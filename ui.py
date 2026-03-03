@@ -17,6 +17,8 @@ class TradingUI:
         self.loop = None
         self.ib_thread = None
         self._flattening = False  # Flag to prevent multiple flatten calls
+        self._tp_input_settled = True
+        self._tp_debounce_id = None
 
         self.create_widgets()
         self.update_flatten_button()
@@ -31,6 +33,9 @@ class TradingUI:
         # Trace symbol to update execute button and start monitoring
         self.symbol_var.trace_add("write", self.update_execute_button)
         self.symbol_var.trace_add("write", self.on_symbol_changed)
+
+        # Debounce target points so typing doesn't trigger TP mid-edit
+        self.target_points_var.trace_add("write", self._on_target_points_changed)
 
     def create_widgets(self):
         # Use pack layout - bottom section first to keep it visible when shrinking
@@ -238,6 +243,17 @@ class TradingUI:
         symbol = self.symbol_var.get()
         self._schedule(self.ib_conn.start_monitor(symbol))
 
+    def _on_target_points_changed(self, *_args):
+        self._tp_input_settled = False
+        if self._tp_debounce_id:
+            self.root.after_cancel(self._tp_debounce_id)
+        self._tp_debounce_id = self.root.after(1000, self._on_target_points_settled)
+
+    def _on_target_points_settled(self):
+        self._tp_input_settled = True
+        self._tp_debounce_id = None
+        print(f"TP input settled: target = {self.target_points_var.get()}")
+
     def _start_ui_timer(self):
         """Start the periodic UI update timer"""
         self._update_ui_from_cache()
@@ -301,8 +317,8 @@ Orders Cancelled: {result['cancelled_orders']}
             except ValueError:
                 target_points = 0
 
-            # Check if take profit is hit
-            if target_points > 0 and self.tp_enabled_var.get() and not self._flattening:
+            # Check if take profit is hit (skip while user is editing the field)
+            if target_points > 0 and self.tp_enabled_var.get() and not self._flattening and self._tp_input_settled:
                 if points >= target_points:
                     self._flattening = True
                     print("Take profit hit! Flattening position...")
@@ -315,12 +331,6 @@ Orders Cancelled: {result['cancelled_orders']}
         self.update_flatten_button()
         self.update_execute_button()
         self.update_breakeven_button()
-
-        # Disable target entry when in a trade
-        if self.ib_conn.active_long or self.ib_conn.active_short:
-            self.target_entry.config(state="disabled")
-        else:
-            self.target_entry.config(state="normal")
 
     def _format_trade_info(
         self,
