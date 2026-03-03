@@ -95,7 +95,7 @@ class TradingUI:
 
         # Symbol Selection
         ttk.Label(trade_frame, text="Symbol:").grid(row=0, column=0, sticky="w", pady=5)
-        self.symbol_var = tk.StringVar(value="MES")
+        self.symbol_var = tk.StringVar(value="ES")
         self.symbol_combo = ttk.Combobox(
             trade_frame, textvariable=self.symbol_var, values=["ES", "MES", "NQ", "MNQ"], state="readonly", width=10
         )
@@ -111,7 +111,7 @@ class TradingUI:
 
         # Quantity
         ttk.Label(trade_frame, text="Quantity:").grid(row=2, column=0, sticky="w", pady=5)
-        self.quantity_var = tk.StringVar(value="3")
+        self.quantity_var = tk.StringVar(value="1")
         self.quantity_entry = ttk.Entry(trade_frame, textvariable=self.quantity_var, width=12)
         self.quantity_entry.grid(row=2, column=1, sticky="w", pady=5)
 
@@ -126,13 +126,13 @@ class TradingUI:
 
         # Ladder
         ttk.Label(trade_frame, text="Ladder (pts):").grid(row=4, column=0, sticky="w", pady=5)
-        self.ladder_steps_var = tk.StringVar(value="3, 5, 7")  # try 2,4,8 with 10.50 stplss
+        self.ladder_steps_var = tk.StringVar(value="6,7")  # try 2,4,8 with 10.50 stplss
         self.ladder_steps_entry = ttk.Entry(trade_frame, textvariable=self.ladder_steps_var, width=12)
         self.ladder_steps_entry.grid(row=4, column=1, sticky="w", pady=5)
 
         # Stop Loss Points
         ttk.Label(trade_frame, text="Stop Loss (pts):").grid(row=5, column=0, sticky="w", pady=5)
-        self.stop_points_var = tk.StringVar(value="10.50")
+        self.stop_points_var = tk.StringVar(value="12")
         stop_frame = ttk.Frame(trade_frame)
         stop_frame.grid(row=5, column=1, sticky="w", pady=5)
         self.stop_entry = ttk.Entry(stop_frame, textvariable=self.stop_points_var, width=12)
