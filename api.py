@@ -1,5 +1,7 @@
 from ib_async import IB, Future, MarketOrder, StopOrder, LimitOrder
 import asyncio
+import math
+from datetime import datetime
 
 
 class IBConnection:
@@ -25,6 +27,8 @@ class IBConnection:
         self.stop_points = 0
         self.direction = None
         self.ladder_orders = []
+        self.entry_time = None       # datetime when trade was entered
+        self.initial_quantity = 0   # contracts per rung (for rung count)
 
         # For background monitoring
         self.loop = None
@@ -305,6 +309,8 @@ class IBConnection:
         self.max_contracts = max_contracts
         self.ladder_steps = ladder_steps
         self.stop_points = stop_points
+        self.entry_time = datetime.now()
+        self.initial_quantity = quantity
         self.direction = direction
         self.contract = contract
         self.active_symbol = symbol
@@ -483,8 +489,8 @@ class IBConnection:
             # Wait for cancellations to process
             await asyncio.sleep(0.5)
 
-            # Place new stop at target price
-            stop_price = round(target_price * 4) / 4  # Round to tick size
+            # Use target price as-is (caller is responsible for valid tick)
+            stop_price = target_price
 
             if position_qty > 0:
                 # Long position - stop is a SELL
@@ -511,15 +517,26 @@ class IBConnection:
 
     async def move_stop_to_breakeven(self, symbol):
         """
-        Cancel all resting orders and place new stop at average cost (breakeven)
-
-        Args:
-            symbol: 'ES', 'MES', 'NQ', or 'MNQ'
+        Cancel all resting orders and place new stop at breakeven + one tick to cover commission.
+        avg_entry_price from IBKR already includes entry commission but is not a valid tick,
+        so we round to the next valid tick in our favour.
         """
         avg_price = self.avg_entry_price
         if avg_price <= 0:
             return {"success": False, "message": "Could not get average entry price"}
-        return await self.move_stop_to_price(symbol, avg_price)
+        # Read direction from live position (don't rely on cached flag)
+        positions = self.ib.positions()
+        position_qty = 0
+        for pos in positions:
+            if pos.contract.symbol == symbol:
+                position_qty = int(pos.position)
+                break
+        if position_qty == 0:
+            return {"success": False, "message": f"No {symbol} position found"}
+        is_long = position_qty > 0
+        breakeven = math.ceil(avg_price * 4) / 4 if is_long else math.floor(avg_price * 4) / 4
+        print(f"Breakeven: avg={avg_price:.4f} is_long={is_long} → tick={breakeven:.2f}")
+        return await self.move_stop_to_price(symbol, breakeven)
 
     async def flatten_position(self, symbol):
         """

@@ -1,7 +1,10 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import asyncio
+import csv
+import os
 import threading
+from datetime import datetime
 from api import IBConnection
 from components import BuySellToggle
 
@@ -19,6 +22,8 @@ class TradingUI:
         self._flattening = False  # Flag to prevent multiple flatten calls
         self._tp_input_settled = True
         self._tp_debounce_id = None
+        self._had_position = False       # tracks position state for broker stop detection
+        self._expect_position_gone = False  # set when we triggered the flatten ourselves
 
         self.create_widgets()
         self.update_flatten_button()
@@ -262,6 +267,8 @@ class TradingUI:
     async def _auto_flatten(self, symbol):
         """Auto-flatten position when take profit is hit"""
         try:
+            journal_data = self._capture_journal_data(0.0)  # capture before reset
+            self._expect_position_gone = True
             result = await self.ib_conn.flatten_position(symbol)
             if result["success"]:
                 closed_list = "\n".join(result.get("closed_contracts", []))
@@ -275,7 +282,11 @@ Average Fill: {result['close_price']:.2f}
 Orders Cancelled: {result['cancelled_orders']}
 """
                 self.root.after(0, lambda: self.update_exec_log(info))
+                journal_data["close_price"] = result["close_price"]
+                self._compute_journal_pnl(journal_data)
+                self.root.after(0, lambda d=journal_data: self._show_journal_popup(d, "Take Profit"))
             else:
+                self._expect_position_gone = False
                 self.root.after(0, lambda: self.update_exec_log(f"ERROR: {result['message']}\n"))
         finally:
             self._flattening = False
@@ -326,6 +337,18 @@ Orders Cancelled: {result['cancelled_orders']}
                     self._schedule(self._auto_flatten(symbol))
         else:
             self.pnl_label.config(text="")
+
+        # Detect broker stop: position disappeared without us triggering a flatten
+        currently_has_position = self.ib_conn.active_long or self.ib_conn.active_short
+        if self._had_position and not currently_has_position:
+            if self._expect_position_gone:
+                self._expect_position_gone = False
+            else:
+                # Broker stop fired — capture data with current price as approx exit
+                data = self._capture_journal_data(self.ib_conn.current_price or 0.0)
+                self._compute_journal_pnl(data)
+                self.root.after(100, lambda d=data: self._show_journal_popup(d, "Stop Loss"))
+        self._had_position = currently_has_position
 
         # Update button states
         self.update_flatten_button()
@@ -687,12 +710,122 @@ Position will update when orders fill."""
             self.max_loss_label.config(text="")
             self.ladder_info_label.config(text="")
 
+    # ── Journal ──────────────────────────────────────────────────────────────
+
+    _JOURNAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trade_journal.csv")
+    _JOURNAL_HEADERS = ["Date", "Symbol", "Direction", "Entry Price", "Exit Price",
+                        "Rungs Used", "Hold Time", "P&L ($)", "Exit Reason",
+                        "Followed Rules", "Notes"]
+
+    def _capture_journal_data(self, close_price):
+        """Snapshot current position data before it gets reset."""
+        conn = self.ib_conn
+        symbol = conn.active_symbol or self.symbol_var.get()
+        direction = "LONG" if conn.active_long else "SHORT"
+        entry_price = conn.avg_entry_price
+        quantity = conn.current_quantity
+        multiplier = conn.MULTIPLIERS.get(symbol, 50.0)
+        initial_qty = conn.initial_quantity or 1
+        rungs = max(1, round(quantity / initial_qty)) if quantity > 0 else 1
+
+        hold_time = ""
+        if conn.entry_time:
+            delta = datetime.now() - conn.entry_time
+            secs = int(delta.total_seconds())
+            hold_time = f"{secs // 60}m {secs % 60}s"
+
+        return {
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "symbol": symbol,
+            "direction": direction,
+            "entry_price": entry_price,
+            "close_price": close_price,
+            "rungs": rungs,
+            "hold_time": hold_time,
+            "pnl": 0.0,
+            "multiplier": multiplier,
+            "quantity": quantity,
+        }
+
+    def _compute_journal_pnl(self, data):
+        """Recalculate P&L once close_price is known."""
+        ep = data["entry_price"]
+        cp = data["close_price"]
+        qty = data["quantity"]
+        mul = data["multiplier"]
+        if ep and cp:
+            data["pnl"] = ((cp - ep) if data["direction"] == "LONG" else (ep - cp)) * qty * mul
+
+    def _save_journal(self, data, reason, followed_rules, notes):
+        """Append one row to the CSV journal."""
+        file_exists = os.path.exists(self._JOURNAL_FILE)
+        with open(self._JOURNAL_FILE, "a", newline="") as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(self._JOURNAL_HEADERS)
+            writer.writerow([
+                data["date"],
+                data["symbol"],
+                data["direction"],
+                f"{data['entry_price']:.2f}",
+                f"{data['close_price']:.2f}",
+                data["rungs"],
+                data["hold_time"],
+                f"{data['pnl']:.2f}",
+                reason,
+                "Yes" if followed_rules else "No",
+                notes,
+            ])
+        print(f"Journal saved to {self._JOURNAL_FILE}")
+
+    def _show_journal_popup(self, data, reason):
+        """Show the post-trade journal popup."""
+        popup = tk.Toplevel(self.root)
+        popup.title("How did this trade go?")
+        popup.geometry("420x380")
+        popup.resizable(False, False)
+        popup.grab_set()  # modal
+
+        pad = {"padx": 16, "pady": 6}
+
+        # Exit reason (read-only info)
+        tk.Label(popup, text=f"Exit: {reason}  |  {data['symbol']} {data['direction']}  |  P&L: ${data['pnl']:+.0f}",
+                 font=("Arial", 10), fg="#888888").pack(anchor="w", **pad)
+
+        ttk.Separator(popup, orient="horizontal").pack(fill="x", padx=16, pady=4)
+
+        # Did I follow my rules?
+        tk.Label(popup, text="Did I follow my rules?", font=("Arial", 11, "bold")).pack(anchor="w", **pad)
+        followed_var = tk.BooleanVar(value=True)
+        rules_frame = tk.Frame(popup)
+        rules_frame.pack(anchor="w", padx=16)
+        tk.Radiobutton(rules_frame, text="Yes", variable=followed_var, value=True).pack(side="left")
+        tk.Radiobutton(rules_frame, text="No",  variable=followed_var, value=False).pack(side="left", padx=(12, 0))
+
+        ttk.Separator(popup, orient="horizontal").pack(fill="x", padx=16, pady=4)
+
+        # Why did I take this trade?
+        tk.Label(popup, text="Why did I take this trade?", font=("Arial", 11, "bold")).pack(anchor="w", **pad)
+        notes_text = tk.Text(popup, height=6, wrap="word", font=("Arial", 10))
+        notes_text.pack(fill="x", padx=16)
+
+        # Save button
+        def on_save():
+            self._save_journal(data, reason, followed_var.get(), notes_text.get("1.0", "end").strip())
+            popup.destroy()
+
+        ttk.Button(popup, text="Save", command=on_save).pack(pady=12)
+
+    # ── Flatten ───────────────────────────────────────────────────────────────
+
     def flatten_position(self):
         """Flatten all positions and cancel resting orders"""
         self.flatten_btn.config(state="disabled")
         self.update_exec_log("Flattening position...\n")
 
         symbol = self.ib_conn.active_symbol or self.symbol_var.get()
+        journal_data = self._capture_journal_data(0.0)  # capture before reset
+        self._expect_position_gone = True
         result = self._run_sync(self.ib_conn.flatten_position(symbol))
 
         if result["success"]:
@@ -709,7 +842,11 @@ Orders Cancelled: {result['cancelled_orders']}
 All positions closed and orders cancelled.
             """
             self.update_exec_log(info)
+            journal_data["close_price"] = result["close_price"]
+            self._compute_journal_pnl(journal_data)
+            self._show_journal_popup(journal_data, "Manual")
         else:
+            self._expect_position_gone = False
             self.update_exec_log(f"ERROR: {result['message']}\n")
             messagebox.showerror("Error", result["message"])
 
