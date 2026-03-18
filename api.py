@@ -1,7 +1,7 @@
 from ib_async import IB, Future, MarketOrder, StopOrder, LimitOrder
 import asyncio
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 class IBConnection:
@@ -157,19 +157,28 @@ class IBConnection:
             print(f"Error updating position stats: {e}")
 
     async def get_front_month_contract(self, symbol):
-        """Get the front month (nearest expiration) contract"""
-        # Request contract details to get all available contracts
+        """Get the active front month contract, skipping contracts expiring within 7 days."""
         contract = Future(symbol=symbol, exchange="CME", currency="USD")
         details = await self.ib.reqContractDetailsAsync(contract)
 
         if not details:
             return None
 
-        # Extract contracts and sort by expiration date
         contracts = [cd.contract for cd in details]
         contracts.sort(key=lambda x: x.lastTradeDateOrContractMonth)
 
-        # Return the nearest expiration (front month)
+        cutoff = datetime.now() + timedelta(days=7)
+        for c in contracts:
+            exp_str = c.lastTradeDateOrContractMonth
+            try:
+                exp = datetime.strptime(exp_str, "%Y%m%d") if len(exp_str) == 8 else datetime.strptime(exp_str, "%Y%m")
+            except ValueError:
+                continue
+            if exp > cutoff:
+                print(f"Active contract: {c.localSymbol} (expires {exp_str})")
+                return c
+
+        # Fallback to nearest if all are within 7 days
         return contracts[0]
 
     async def get_market_price(self, contract):

@@ -6,7 +6,6 @@ import os
 import threading
 from datetime import datetime
 from api import IBConnection
-from components import BuySellToggle
 
 
 class TradingUI:
@@ -22,7 +21,7 @@ class TradingUI:
         self._flattening = False  # Flag to prevent multiple flatten calls
         self._tp_input_settled = True
         self._tp_debounce_id = None
-        self._had_position = False       # tracks position state for broker stop detection
+        self._had_position = False  # tracks position state for broker stop detection
         self._expect_position_gone = False  # set when we triggered the flatten ourselves
 
         self.create_widgets()
@@ -106,40 +105,32 @@ class TradingUI:
         )
         self.symbol_combo.grid(row=0, column=1, sticky="w", pady=5)
 
-        # Direction
-        ttk.Label(trade_frame, text="Direction:").grid(row=1, column=0, sticky="w", pady=5)
-        self.direction_var = tk.StringVar(value="LONG")
-        self.direction_toggle = BuySellToggle(
-            trade_frame, initial_sell=False, on_change=lambda mode: self.direction_var.set(mode)
-        )
-        self.direction_toggle.grid(row=1, column=1, sticky="w", pady=5)
-
         # Quantity
-        ttk.Label(trade_frame, text="Quantity:").grid(row=2, column=0, sticky="w", pady=5)
+        ttk.Label(trade_frame, text="Quantity:").grid(row=1, column=0, sticky="w", pady=5)
         self.quantity_var = tk.StringVar(value="1")
         self.quantity_entry = ttk.Entry(trade_frame, textvariable=self.quantity_var, width=12)
-        self.quantity_entry.grid(row=2, column=1, sticky="w", pady=5)
+        self.quantity_entry.grid(row=1, column=1, sticky="w", pady=5)
 
         # Entry Price (optional)
-        ttk.Label(trade_frame, text="Entry Price:").grid(row=3, column=0, sticky="w", pady=5)
+        ttk.Label(trade_frame, text="Entry Price:").grid(row=2, column=0, sticky="w", pady=5)
         self.entry_price_var = tk.StringVar()
         entry_frame = ttk.Frame(trade_frame)
-        entry_frame.grid(row=3, column=1, sticky="w", pady=5)
+        entry_frame.grid(row=2, column=1, sticky="w", pady=5)
         self.entry_price_entry = ttk.Entry(entry_frame, textvariable=self.entry_price_var, width=12)
         self.entry_price_entry.pack(side="left")
         ttk.Label(entry_frame, text="(leave empty for market)").pack(side="left", padx=5)
 
         # Ladder
-        ttk.Label(trade_frame, text="Ladder (pts):").grid(row=4, column=0, sticky="w", pady=5)
-        self.ladder_steps_var = tk.StringVar(value="6,7")  # try 2,4,8 with 10.50 stplss
+        ttk.Label(trade_frame, text="Ladder (pts):").grid(row=3, column=0, sticky="w", pady=5)
+        self.ladder_steps_var = tk.StringVar(value="7.5")
         self.ladder_steps_entry = ttk.Entry(trade_frame, textvariable=self.ladder_steps_var, width=12)
-        self.ladder_steps_entry.grid(row=4, column=1, sticky="w", pady=5)
+        self.ladder_steps_entry.grid(row=3, column=1, sticky="w", pady=5)
 
         # Stop Loss Points
-        ttk.Label(trade_frame, text="Stop Loss (pts):").grid(row=5, column=0, sticky="w", pady=5)
-        self.stop_points_var = tk.StringVar(value="12")
+        ttk.Label(trade_frame, text="Stop Loss (pts):").grid(row=4, column=0, sticky="w", pady=5)
+        self.stop_points_var = tk.StringVar(value="11.25")
         stop_frame = ttk.Frame(trade_frame)
-        stop_frame.grid(row=5, column=1, sticky="w", pady=5)
+        stop_frame.grid(row=4, column=1, sticky="w", pady=5)
         self.stop_entry = ttk.Entry(stop_frame, textvariable=self.stop_points_var, width=12)
         self.stop_entry.pack(side="left")
         self.min_stop_label = ttk.Label(stop_frame, text="", foreground="orange")
@@ -149,24 +140,41 @@ class TradingUI:
 
         # Ladder info row
         ladder_info_frame = ttk.Frame(trade_frame)
-        ladder_info_frame.grid(row=6, column=0, columnspan=2, pady=(0, 5))
+        ladder_info_frame.grid(row=5, column=0, columnspan=2, pady=(0, 5))
         self.ladder_info_label = ttk.Label(ladder_info_frame, text="", foreground="white")
         self.ladder_info_label.pack()
 
         # Target points with Take Profit checkbox
-        ttk.Label(trade_frame, text="Target (pts):").grid(row=7, column=0, sticky="w", pady=5)
+        ttk.Label(trade_frame, text="Target (pts):").grid(row=6, column=0, sticky="w", pady=5)
         target_frame = ttk.Frame(trade_frame)
-        target_frame.grid(row=7, column=1, sticky="w", pady=5)
-        self.target_points_var = tk.StringVar(value="6")
+        target_frame.grid(row=6, column=1, sticky="w", pady=5)
+        self.target_points_var = tk.StringVar(value="20")
         self.target_entry = ttk.Entry(target_frame, textvariable=self.target_points_var, width=5)
         self.target_entry.pack(side="left")
         self.tp_enabled_var = tk.BooleanVar(value=True)
         self.tp_checkbox = ttk.Checkbutton(target_frame, text="Take Profit", variable=self.tp_enabled_var)
         self.tp_checkbox.pack(side="left", padx=(10, 0))
 
-        # Execute Button
-        self.execute_btn = ttk.Button(trade_frame, text="EXECUTE TRADE", command=self.execute_trade, state="disabled")
-        self.execute_btn.grid(row=8, column=0, columnspan=2, pady=15)
+        # LONG / SHORT buttons
+        exec_btn_frame = ttk.Frame(trade_frame)
+        exec_btn_frame.grid(row=7, column=0, columnspan=2, pady=15)
+
+        self._execute_enabled = False
+        self._color_long = "#27ae60"
+        self._color_short = "#c0392b"
+        self._color_dim = "#555555"
+
+        self.long_btn = tk.Canvas(exec_btn_frame, width=90, height=32, highlightthickness=0)
+        self._long_rect = self.long_btn.create_rectangle(0, 0, 90, 32, fill=self._color_dim, outline="")
+        self.long_btn.create_text(45, 16, text="LONG", fill="white", font=("Arial", 11, "bold"))
+        self.long_btn.bind("<Button-1>", lambda e: self._on_execute_click("LONG"))
+        self.long_btn.pack(side="left", padx=(0, 8))
+
+        self.short_btn = tk.Canvas(exec_btn_frame, width=90, height=32, highlightthickness=0)
+        self._short_rect = self.short_btn.create_rectangle(0, 0, 90, 32, fill=self._color_dim, outline="")
+        self.short_btn.create_text(45, 16, text="SHORT", fill="white", font=("Arial", 11, "bold"))
+        self.short_btn.bind("<Button-1>", lambda e: self._on_execute_click("SHORT"))
+        self.short_btn.pack(side="left")
 
         # Tabbed Info Section (fills remaining space in middle)
         self.info_notebook = ttk.Notebook(self.root)
@@ -310,17 +318,15 @@ Orders Cancelled: {result['cancelled_orders']}
 
             if self.ib_conn.active_long:
                 # pnl = (current_price - avg_price) * qty * multiplier
-                points = current_price - avg_price
+                points = round((current_price - avg_price) * 4) / 4
             else:  # short
                 # pnl = (avg_price - current_price) * qty * multiplier
-                points = avg_price - current_price
+                points = round((avg_price - current_price) * 4) / 4
 
             if points >= 0:
-                # self.pnl_label.config(text=f"PNL +${pnl:,.0f} ({points:.1f} pts)", fg="green")
-                self.pnl_label.config(text=f"+{points:.1f} pts", fg="green")
+                self.pnl_label.config(text=f"{points:.2f} pts", fg="green")
             else:
-                # self.pnl_label.config(text=f"PNL -${abs(pnl):,.0f} ({points:.1f} pts)", fg="red")
-                self.pnl_label.config(text=f"{points:.1f} pts", fg="red")
+                self.pnl_label.config(text=f"{points:.2f} pts", fg="red")
 
             # Get target points value
             try:
@@ -512,13 +518,12 @@ Position will update when orders fill."""
                 steps.append(float(s))
         return steps
 
-    def execute_trade(self):
+    def execute_trade(self, direction):
         if not self.ib_conn.connected:
             messagebox.showerror("Error", "Not connected to IB")
             return
 
         try:
-            direction = self.direction_var.get()
             quantity = int(self.quantity_var.get())
             entry_price_str = self.entry_price_var.get().strip()
             entry_price = float(entry_price_str) if entry_price_str else None
@@ -533,12 +538,16 @@ Position will update when orders fill."""
                 messagebox.showerror("Error", "Stop loss must be greater than 0")
                 return
 
-            if not ladder_steps:
-                messagebox.showerror("Error", "At least one ladder step is required")
-                return
+            # if not ladder_steps:
+            #     messagebox.showerror("Error", "At least one ladder step is required")
+            #     return
 
-            # Disable button during execution
-            self.execute_btn.config(state="disabled")
+            # Disable buttons during execution
+            self._execute_enabled = False
+            self.long_btn.itemconfig(self._long_rect, fill=self._color_dim)
+            self.long_btn.config(cursor="")
+            self.short_btn.itemconfig(self._short_rect, fill=self._color_dim)
+            self.short_btn.config(cursor="")
             self.update_exec_log("Executing trade...\n")
 
             # Get selected symbol
@@ -580,15 +589,14 @@ Position will update when orders fill."""
             else:
                 self.update_exec_log(f"ERROR: {result['message']}\n")
                 messagebox.showerror("Error", result["message"])
-                # Re-enable button only on failure
-                self.execute_btn.config(state="normal")
+                self.update_execute_button()
 
         except ValueError:
             messagebox.showerror("Error", "Invalid input values")
-            self.execute_btn.config(state="normal")
+            self.update_execute_button()
         except Exception as e:
             messagebox.showerror("Error", f"Unexpected error: {str(e)}")
-            self.execute_btn.config(state="normal")
+            self.update_execute_button()
 
     def update_exec_log(self, text):
         """Update the Execution Log tab"""
@@ -606,16 +614,24 @@ Position will update when orders fill."""
         self.pos_text.config(state="disabled")
         self.info_notebook.select(1)  # Switch to Position tab
 
-    def update_execute_button(self, *_args):
-        """Update execute button state based on connection and existing positions"""
-        # Disable if any position exists (must flatten first)
-        has_any_position = self.ib_conn.active_long or self.ib_conn.active_short
+    def _on_execute_click(self, direction):
+        if self._execute_enabled:
+            self.execute_trade(direction)
 
-        # Disable if: not connected or any position exists
-        if self.ib_conn.connected and not has_any_position:
-            self.execute_btn.config(state="normal")
+    def update_execute_button(self, *_args):
+        """Update LONG/SHORT button colors based on connection and existing positions."""
+        has_any_position = self.ib_conn.active_long or self.ib_conn.active_short
+        self._execute_enabled = self.ib_conn.connected and not has_any_position
+        if self._execute_enabled:
+            self.long_btn.itemconfig(self._long_rect, fill=self._color_long)
+            self.long_btn.config(cursor="hand2")
+            self.short_btn.itemconfig(self._short_rect, fill=self._color_short)
+            self.short_btn.config(cursor="hand2")
         else:
-            self.execute_btn.config(state="disabled")
+            self.long_btn.itemconfig(self._long_rect, fill=self._color_dim)
+            self.long_btn.config(cursor="")
+            self.short_btn.itemconfig(self._short_rect, fill=self._color_dim)
+            self.short_btn.config(cursor="")
 
     def update_flatten_button(self):
         """Update flatten button state based on active positions"""
@@ -713,9 +729,19 @@ Position will update when orders fill."""
     # ── Journal ──────────────────────────────────────────────────────────────
 
     _JOURNAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trade_journal.csv")
-    _JOURNAL_HEADERS = ["Date", "Symbol", "Direction", "Entry Price", "Exit Price",
-                        "Rungs Used", "Hold Time", "P&L ($)", "Exit Reason",
-                        "Followed Rules", "Notes"]
+    _JOURNAL_HEADERS = [
+        "Date",
+        "Symbol",
+        "Direction",
+        "Entry Price",
+        "Exit Price",
+        "Rungs Used",
+        "Hold Time",
+        "P&L ($)",
+        "Exit Reason",
+        "Followed Rules",
+        "Notes",
+    ]
 
     def _capture_journal_data(self, close_price):
         """Snapshot current position data before it gets reset."""
@@ -763,19 +789,21 @@ Position will update when orders fill."""
             writer = csv.writer(f)
             if not file_exists:
                 writer.writerow(self._JOURNAL_HEADERS)
-            writer.writerow([
-                data["date"],
-                data["symbol"],
-                data["direction"],
-                f"{data['entry_price']:.2f}",
-                f"{data['close_price']:.2f}",
-                data["rungs"],
-                data["hold_time"],
-                f"{data['pnl']:.2f}",
-                reason,
-                "Yes" if followed_rules else "No",
-                notes,
-            ])
+            writer.writerow(
+                [
+                    data["date"],
+                    data["symbol"],
+                    data["direction"],
+                    f"{data['entry_price']:.2f}",
+                    f"{data['close_price']:.2f}",
+                    data["rungs"],
+                    data["hold_time"],
+                    f"{data['pnl']:.2f}",
+                    reason,
+                    "Yes" if followed_rules else "No",
+                    notes,
+                ]
+            )
         print(f"Journal saved to {self._JOURNAL_FILE}")
 
     def _show_journal_popup(self, data, reason):
@@ -789,8 +817,12 @@ Position will update when orders fill."""
         pad = {"padx": 16, "pady": 6}
 
         # Exit reason (read-only info)
-        tk.Label(popup, text=f"Exit: {reason}  |  {data['symbol']} {data['direction']}  |  P&L: ${data['pnl']:+.0f}",
-                 font=("Arial", 10), fg="#888888").pack(anchor="w", **pad)
+        tk.Label(
+            popup,
+            text=f"Exit: {reason}  |  {data['symbol']} {data['direction']}  |  P&L: ${data['pnl']:+.0f}",
+            font=("Arial", 10),
+            fg="#888888",
+        ).pack(anchor="w", **pad)
 
         ttk.Separator(popup, orient="horizontal").pack(fill="x", padx=16, pady=4)
 
@@ -800,7 +832,7 @@ Position will update when orders fill."""
         rules_frame = tk.Frame(popup)
         rules_frame.pack(anchor="w", padx=16)
         tk.Radiobutton(rules_frame, text="Yes", variable=followed_var, value=True).pack(side="left")
-        tk.Radiobutton(rules_frame, text="No",  variable=followed_var, value=False).pack(side="left", padx=(12, 0))
+        tk.Radiobutton(rules_frame, text="No", variable=followed_var, value=False).pack(side="left", padx=(12, 0))
 
         ttk.Separator(popup, orient="horizontal").pack(fill="x", padx=16, pady=4)
 
