@@ -122,13 +122,13 @@ class TradingUI:
 
         # Ladder
         ttk.Label(trade_frame, text="Ladder (pts):").grid(row=3, column=0, sticky="w", pady=5)
-        self.ladder_steps_var = tk.StringVar(value="7.5")
+        self.ladder_steps_var = tk.StringVar(value="12")
         self.ladder_steps_entry = ttk.Entry(trade_frame, textvariable=self.ladder_steps_var, width=12)
         self.ladder_steps_entry.grid(row=3, column=1, sticky="w", pady=5)
 
         # Stop Loss Points
         ttk.Label(trade_frame, text="Stop Loss (pts):").grid(row=4, column=0, sticky="w", pady=5)
-        self.stop_points_var = tk.StringVar(value="11.25")
+        self.stop_points_var = tk.StringVar(value="15")
         stop_frame = ttk.Frame(trade_frame)
         stop_frame.grid(row=4, column=1, sticky="w", pady=5)
         self.stop_entry = ttk.Entry(stop_frame, textvariable=self.stop_points_var, width=12)
@@ -744,6 +744,7 @@ Position will update when orders fill."""
     ]
 
     def _capture_journal_data(self, close_price):
+        return
         """Snapshot current position data before it gets reset."""
         conn = self.ib_conn
         symbol = conn.active_symbol or self.symbol_var.get()
