@@ -122,7 +122,7 @@ class TradingUI:
 
         # Ladder
         ttk.Label(trade_frame, text="Ladder (pts):").grid(row=3, column=0, sticky="w", pady=5)
-        self.ladder_steps_var = tk.StringVar(value="12")
+        self.ladder_steps_var = tk.StringVar(value="10")
         self.ladder_steps_entry = ttk.Entry(trade_frame, textvariable=self.ladder_steps_var, width=12)
         self.ladder_steps_entry.grid(row=3, column=1, sticky="w", pady=5)
 
