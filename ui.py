@@ -627,6 +627,16 @@ Position will update when orders fill."""
             self.long_btn.config(cursor="hand2")
             self.short_btn.itemconfig(self._short_rect, fill=self._color_short)
             self.short_btn.config(cursor="hand2")
+        elif self.ib_conn.connected and self.ib_conn.active_long:
+            self.long_btn.itemconfig(self._long_rect, fill=self._color_long)
+            self.long_btn.config(cursor="")
+            self.short_btn.itemconfig(self._short_rect, fill=self._color_dim)
+            self.short_btn.config(cursor="")
+        elif self.ib_conn.connected and self.ib_conn.active_short:
+            self.long_btn.itemconfig(self._long_rect, fill=self._color_dim)
+            self.long_btn.config(cursor="")
+            self.short_btn.itemconfig(self._short_rect, fill=self._color_short)
+            self.short_btn.config(cursor="")
         else:
             self.long_btn.itemconfig(self._long_rect, fill=self._color_dim)
             self.long_btn.config(cursor="")
