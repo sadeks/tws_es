@@ -313,20 +313,20 @@ Orders Cancelled: {result['cancelled_orders']}
             symbol = self.ib_conn.active_symbol
             current_price = self.ib_conn.current_price
             avg_price = self.ib_conn.avg_entry_price
-            # qty = self.ib_conn.current_quantity
-            # multiplier = self.ib_conn.MULTIPLIERS.get(symbol, 50.0)
+            qty = self.ib_conn.current_quantity
+            multiplier = self.ib_conn.MULTIPLIERS.get(symbol, 50.0)
 
             if self.ib_conn.active_long:
-                # pnl = (current_price - avg_price) * qty * multiplier
+                pnl = (current_price - avg_price) * qty * multiplier
                 points = round((current_price - avg_price) * 4) / 4
             else:  # short
-                # pnl = (avg_price - current_price) * qty * multiplier
+                pnl = (avg_price - current_price) * qty * multiplier
                 points = round((avg_price - current_price) * 4) / 4
 
             if points >= 0:
-                self.pnl_label.config(text=f"{points:.2f} pts", fg="green")
+                self.pnl_label.config(text=f"{points:.2f} pts  |  ${abs(pnl):,.0f}", fg="green")
             else:
-                self.pnl_label.config(text=f"{points:.2f} pts", fg="red")
+                self.pnl_label.config(text=f"{points:.2f} pts  |  ${abs(pnl):,.0f}", fg="red")
 
             # Get target points value
             try:
