@@ -4,7 +4,7 @@ import asyncio
 import csv
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from api import IBConnection
 
 
@@ -23,6 +23,8 @@ class TradingUI:
         self._tp_debounce_id = None
         self._had_position = False  # tracks position state for broker stop detection
         self._expect_position_gone = False  # set when we triggered the flatten ourselves
+        self.COOLDOWN_MINUTES = 5  # cooldown after each closed trade — change this to adjust
+        self._cooldown_end = None
 
         self.create_widgets()
         self.update_flatten_button()
@@ -292,6 +294,7 @@ Orders Cancelled: {result['cancelled_orders']}
                 self.root.after(0, lambda: self.update_exec_log(info))
                 journal_data["close_price"] = result["close_price"]
                 self._compute_journal_pnl(journal_data)
+                self._start_cooldown()
                 self.root.after(0, lambda d=journal_data: self._show_journal_popup(d, "Take Profit"))
             else:
                 self._expect_position_gone = False
@@ -342,7 +345,12 @@ Orders Cancelled: {result['cancelled_orders']}
                     self.update_exec_log("Take profit hit! Flattening position...\n")
                     self._schedule(self._auto_flatten(symbol))
         else:
-            self.pnl_label.config(text="")
+            if self._cooldown_end and datetime.now() < self._cooldown_end:
+                remaining = int((self._cooldown_end - datetime.now()).total_seconds())
+                self.pnl_label.config(text=f"Cooldown: {remaining // 60}:{remaining % 60:02d}", fg="orange")
+            else:
+                self._cooldown_end = None
+                self.pnl_label.config(text="")
 
         # Detect broker stop: position disappeared without us triggering a flatten
         currently_has_position = self.ib_conn.active_long or self.ib_conn.active_short
@@ -353,6 +361,7 @@ Orders Cancelled: {result['cancelled_orders']}
                 # Broker stop fired — capture data with current price as approx exit
                 data = self._capture_journal_data(self.ib_conn.current_price or 0.0)
                 self._compute_journal_pnl(data)
+                self._start_cooldown()
                 self.root.after(100, lambda d=data: self._show_journal_popup(d, "Stop Loss"))
         self._had_position = currently_has_position
 
@@ -621,7 +630,8 @@ Position will update when orders fill."""
     def update_execute_button(self, *_args):
         """Update LONG/SHORT button colors based on connection and existing positions."""
         has_any_position = self.ib_conn.active_long or self.ib_conn.active_short
-        self._execute_enabled = self.ib_conn.connected and not has_any_position
+        in_cooldown = self._cooldown_end is not None and datetime.now() < self._cooldown_end
+        self._execute_enabled = self.ib_conn.connected and not has_any_position and not in_cooldown
         if self._execute_enabled:
             self.long_btn.itemconfig(self._long_rect, fill=self._color_long)
             self.long_btn.config(cursor="hand2")
@@ -735,6 +745,9 @@ Position will update when orders fill."""
             self.min_stop_label.config(text="")
             self.max_loss_label.config(text="")
             self.ladder_info_label.config(text="")
+
+    def _start_cooldown(self):
+        self._cooldown_end = datetime.now() + timedelta(minutes=self.COOLDOWN_MINUTES)
 
     # ── Journal ──────────────────────────────────────────────────────────────
 
@@ -887,6 +900,7 @@ All positions closed and orders cancelled.
             self.update_exec_log(info)
             journal_data["close_price"] = result["close_price"]
             self._compute_journal_pnl(journal_data)
+            self._start_cooldown()
             self._show_journal_popup(journal_data, "Manual")
         else:
             self._expect_position_gone = False
