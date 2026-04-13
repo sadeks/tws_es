@@ -124,13 +124,13 @@ class TradingUI:
 
         # Ladder
         ttk.Label(trade_frame, text="Ladder (pts):").grid(row=3, column=0, sticky="w", pady=5)
-        self.ladder_steps_var = tk.StringVar(value="10")
+        self.ladder_steps_var = tk.StringVar(value="")
         self.ladder_steps_entry = ttk.Entry(trade_frame, textvariable=self.ladder_steps_var, width=12)
         self.ladder_steps_entry.grid(row=3, column=1, sticky="w", pady=5)
 
         # Stop Loss Points
         ttk.Label(trade_frame, text="Stop Loss (pts):").grid(row=4, column=0, sticky="w", pady=5)
-        self.stop_points_var = tk.StringVar(value="15")
+        self.stop_points_var = tk.StringVar(value="10")
         stop_frame = ttk.Frame(trade_frame)
         stop_frame.grid(row=4, column=1, sticky="w", pady=5)
         self.stop_entry = ttk.Entry(stop_frame, textvariable=self.stop_points_var, width=12)
@@ -292,10 +292,11 @@ Average Fill: {result['close_price']:.2f}
 Orders Cancelled: {result['cancelled_orders']}
 """
                 self.root.after(0, lambda: self.update_exec_log(info))
-                journal_data["close_price"] = result["close_price"]
-                self._compute_journal_pnl(journal_data)
                 self._start_cooldown()
-                self.root.after(0, lambda d=journal_data: self._show_journal_popup(d, "Take Profit"))
+                if journal_data:
+                    journal_data["close_price"] = result["close_price"]
+                    self._compute_journal_pnl(journal_data)
+                    self.root.after(0, lambda d=journal_data: self._show_journal_popup(d, "Take Profit"))
             else:
                 self._expect_position_gone = False
                 self.root.after(0, lambda: self.update_exec_log(f"ERROR: {result['message']}\n"))
@@ -898,10 +899,11 @@ Orders Cancelled: {result['cancelled_orders']}
 All positions closed and orders cancelled.
             """
             self.update_exec_log(info)
-            journal_data["close_price"] = result["close_price"]
-            self._compute_journal_pnl(journal_data)
             self._start_cooldown()
-            self._show_journal_popup(journal_data, "Manual")
+            if journal_data:
+                journal_data["close_price"] = result["close_price"]
+                self._compute_journal_pnl(journal_data)
+                self._show_journal_popup(journal_data, "Manual")
         else:
             self._expect_position_gone = False
             self.update_exec_log(f"ERROR: {result['message']}\n")
