@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import asyncio
 import csv
+import json
 import os
 import threading
 from datetime import datetime, timedelta
@@ -23,10 +24,11 @@ class TradingUI:
         self._tp_debounce_id = None
         self._had_position = False  # tracks position state for broker stop detection
         self._expect_position_gone = False  # set when we triggered the flatten ourselves
-        self.COOLDOWN_MINUTES = 5  # cooldown after each closed trade — change this to adjust
+        self.COOLDOWN_MINUTES = 2  # cooldown after each closed trade — change this to adjust
         self._cooldown_end = None
 
         self.create_widgets()
+        self._apply_preset("Medium")
         self.update_flatten_button()
 
         # Trace variables to update max loss display
@@ -157,9 +159,27 @@ class TradingUI:
         self.tp_checkbox = ttk.Checkbutton(target_frame, text="Take Profit", variable=self.tp_enabled_var)
         self.tp_checkbox.pack(side="left", padx=(10, 0))
 
+        # Preset buttons (Medium / Heavy)
+        preset_btn_frame = ttk.Frame(trade_frame)
+        preset_btn_frame.grid(row=7, column=0, columnspan=2, pady=(10, 20))
+
+        self._color_preset_active = "#2980b9"
+        self._color_preset_inactive = "#555555"
+        self._active_preset = None
+        self._preset_buttons = {}
+        self._preset_rects = {}
+        for name in ("Medium", "Heavy"):
+            canvas = tk.Canvas(preset_btn_frame, width=70, height=26, highlightthickness=0)
+            rect = canvas.create_rectangle(0, 0, 70, 26, fill=self._color_preset_inactive, outline="")
+            canvas.create_text(35, 13, text=name, fill="white", font=("Arial", 10))
+            canvas.bind("<Button-1>", lambda e, n=name: self._apply_preset(n))
+            canvas.pack(side="left", padx=4)
+            self._preset_buttons[name] = canvas
+            self._preset_rects[name] = rect
+
         # LONG / SHORT buttons
         exec_btn_frame = ttk.Frame(trade_frame)
-        exec_btn_frame.grid(row=7, column=0, columnspan=2, pady=15)
+        exec_btn_frame.grid(row=8, column=0, columnspan=2, pady=(8, 15))
 
         self._execute_enabled = False
         self._color_long = "#27ae60"
@@ -193,6 +213,36 @@ class TradingUI:
         self.info_notebook.add(pos_frame, text="Position")
         self.pos_text = tk.Text(pos_frame, height=8, state="disabled")
         self.pos_text.pack(fill="both", expand=True)
+
+    _PRESETS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "presets.json")
+
+    def _load_presets(self):
+        with open(self._PRESETS_FILE) as f:
+            return json.load(f)
+
+    def _apply_preset(self, name):
+        try:
+            presets = self._load_presets()
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not load presets.json: {e}")
+            return
+        if name not in presets:
+            messagebox.showerror("Error", f"Preset '{name}' not found in presets.json")
+            return
+        p = presets[name]
+        if "symbol" in p:
+            self.symbol_var.set(p["symbol"])
+        if "quantity" in p:
+            self.quantity_var.set(str(p["quantity"]))
+        if "ladder" in p:
+            self.ladder_steps_var.set(str(p["ladder"]))
+        if "stop_loss" in p:
+            self.stop_points_var.set(str(p["stop_loss"]))
+        # Update button highlights
+        self._active_preset = name
+        for n, canvas in self._preset_buttons.items():
+            color = self._color_preset_active if n == name else self._color_preset_inactive
+            canvas.itemconfig(self._preset_rects[n], fill=color)
 
     def _run_event_loop(self):
         """Run the asyncio event loop in a background thread"""
@@ -444,8 +494,14 @@ Position will update when orders fill."""
                 entry_order = limits[0]
                 ladder_orders = limits[1:]
 
-                total_cost = sum(o["price"] * o["quantity"] for o in limits)
-                total_qty = sum(o["quantity"] for o in limits)
+                # Include already-filled position in weighted average
+                filled_qty = self.ib_conn.current_quantity if self.ib_conn.active_symbol == sym else 0
+                filled_avg = self.ib_conn.avg_entry_price if filled_qty > 0 else 0.0
+
+                resting_cost = sum(o["price"] * o["quantity"] for o in limits)
+                resting_qty = sum(o["quantity"] for o in limits)
+                total_cost = (filled_avg * filled_qty) + resting_cost
+                total_qty = filled_qty + resting_qty
                 expected_avg = total_cost / total_qty if total_qty > 0 else entry_order["price"]
             else:
                 entry_order = {"price": 0, "quantity": 0}
@@ -518,6 +574,7 @@ Position will update when orders fill."""
         self.update_flatten_button()
         self.update_execute_button()
         self.update_breakeven_button()
+        self._display_open_orders()
 
     def _parse_ladder_steps(self, ladder_str):
         """Parse comma-separated ladder steps into a list of floats"""
