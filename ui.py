@@ -26,6 +26,7 @@ class TradingUI:
         self._expect_position_gone = False  # set when we triggered the flatten ourselves
         self.COOLDOWN_MINUTES = 2  # cooldown after each closed trade — change this to adjust
         self._cooldown_end = None
+        self.DAILY_PNL_WARNING = 1000  # show warning when daily PnL exceeds this amount
 
         self.create_widgets()
         self._apply_preset("Medium")
@@ -168,7 +169,7 @@ class TradingUI:
         self._active_preset = None
         self._preset_buttons = {}
         self._preset_rects = {}
-        for name in ("Medium", "Heavy"):
+        for name in ("Light", "Medium", "Heavy"):
             canvas = tk.Canvas(preset_btn_frame, width=70, height=26, highlightthickness=0)
             rect = canvas.create_rectangle(0, 0, 70, 26, fill=self._color_preset_inactive, outline="")
             canvas.create_text(35, 13, text=name, fill="white", font=("Arial", 10))
@@ -197,6 +198,10 @@ class TradingUI:
         self.short_btn.create_text(45, 16, text="SHORT", fill="white", font=("Arial", 11, "bold"))
         self.short_btn.bind("<Button-1>", lambda e: self._on_execute_click("SHORT"))
         self.short_btn.pack(side="left")
+
+        # Daily PnL warning label (hidden until threshold is hit)
+        self.pnl_warning_label = tk.Label(self.root, text="", font=("Arial", 10, "bold"), fg="red")
+        self.pnl_warning_label.pack(side="top", pady=(0, 2))
 
         # Tabbed Info Section (fills remaining space in middle)
         self.info_notebook = ttk.Notebook(self.root)
@@ -415,6 +420,13 @@ Orders Cancelled: {result['cancelled_orders']}
                 self._start_cooldown()
                 self.root.after(100, lambda d=data: self._show_journal_popup(d, "Stop Loss"))
         self._had_position = currently_has_position
+
+        # Daily PnL warning
+        daily_pnl = self.ib_conn.get_daily_pnl()
+        if daily_pnl is not None and daily_pnl >= self.DAILY_PNL_WARNING:
+            self.pnl_warning_label.config(text="Consider light trades only to keep your profits")
+        else:
+            self.pnl_warning_label.config(text="")
 
         # Update button states
         self.update_flatten_button()

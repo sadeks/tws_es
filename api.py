@@ -37,6 +37,7 @@ class IBConnection:
         self.current_price = None  # Live price updated by monitor
         self.market_data_ticker = None
         self.monitored_symbol = None
+        self.daily_pnl = None  # Updated via reqPnL subscription
 
     async def connect(self, host="127.0.0.1", port=7497, client_id=1):
         """Connect to IB Gateway or TWS"""
@@ -48,11 +49,25 @@ class IBConnection:
             # Check for existing positions on connect
             await self.sync_positions()
 
+            # Subscribe to daily PnL
+            accounts = self.ib.managedAccounts()
+            if accounts:
+                self.ib.reqPnL(accounts[0])
+
             return True
         except Exception as e:
             print(f"Connection failed: {e}")
             self.connected = False
             return False
+
+    def get_daily_pnl(self):
+        """Return today's realized + unrealized PnL from the subscribed account."""
+        pnl_list = self.ib.pnl()
+        if not pnl_list:
+            return None
+        p = pnl_list[0]
+        daily = getattr(p, "dailyPnL", None)
+        return daily if daily == daily else None  # guard against NaN
 
     def disconnect(self):
         """Disconnect from IB"""
