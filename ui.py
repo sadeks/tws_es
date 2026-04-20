@@ -200,7 +200,7 @@ class TradingUI:
         self.short_btn.pack(side="left")
 
         # Daily PnL warning label (hidden until threshold is hit)
-        self.pnl_warning_label = tk.Label(self.root, text="", font=("Arial", 10, "bold"), fg="red")
+        self.pnl_warning_label = tk.Label(self.root, text="", font=("Arial", 10, "bold"))
         self.pnl_warning_label.pack(side="top", pady=(0, 2))
 
         # Tabbed Info Section (fills remaining space in middle)
@@ -306,6 +306,9 @@ class TradingUI:
         # Display open orders
         self._display_open_orders()
 
+        # Check daily PnL warning once on connect
+        self._update_daily_pnl_warning()
+
         # Start the UI update timer (every 500ms)
         self._start_ui_timer()
 
@@ -323,6 +326,20 @@ class TradingUI:
         self._tp_input_settled = True
         self._tp_debounce_id = None
         print(f"TP input settled: target = {self.target_points_var.get()}")
+
+    def _update_daily_pnl_warning(self):
+        daily_pnl = self.ib_conn.get_daily_pnl()
+        if daily_pnl is not None:
+            if daily_pnl >= self.DAILY_PNL_WARNING:
+                self.pnl_warning_label.config(
+                    text="Daily Goal Reached\n Take light trades only if you must continue!!!", fg="green"
+                )
+            elif daily_pnl <= -self.DAILY_PNL_WARNING:
+                self.pnl_warning_label.config(
+                    text="Daily Loss Limit Hit\n Consider stopping trading for the day!!!", fg="red"
+                )
+        else:
+            self.pnl_warning_label.config(text="")
 
     def _start_ui_timer(self):
         """Start the periodic UI update timer"""
@@ -348,6 +365,7 @@ Orders Cancelled: {result['cancelled_orders']}
 """
                 self.root.after(0, lambda: self.update_exec_log(info))
                 self._start_cooldown()
+                self.root.after(0, self._update_daily_pnl_warning)
                 if journal_data:
                     journal_data["close_price"] = result["close_price"]
                     self._compute_journal_pnl(journal_data)
@@ -418,15 +436,9 @@ Orders Cancelled: {result['cancelled_orders']}
                 data = self._capture_journal_data(self.ib_conn.current_price or 0.0)
                 self._compute_journal_pnl(data)
                 self._start_cooldown()
+                self._update_daily_pnl_warning()
                 self.root.after(100, lambda d=data: self._show_journal_popup(d, "Stop Loss"))
         self._had_position = currently_has_position
-
-        # Daily PnL warning
-        daily_pnl = self.ib_conn.get_daily_pnl()
-        if daily_pnl is not None and daily_pnl >= self.DAILY_PNL_WARNING:
-            self.pnl_warning_label.config(text="Consider light trades only to keep your profits")
-        else:
-            self.pnl_warning_label.config(text="")
 
         # Update button states
         self.update_flatten_button()
@@ -969,6 +981,7 @@ All positions closed and orders cancelled.
             """
             self.update_exec_log(info)
             self._start_cooldown()
+            self._update_daily_pnl_warning()
             if journal_data:
                 journal_data["close_price"] = result["close_price"]
                 self._compute_journal_pnl(journal_data)
