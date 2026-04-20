@@ -26,7 +26,7 @@ class TradingUI:
         self._expect_position_gone = False  # set when we triggered the flatten ourselves
         self.COOLDOWN_MINUTES = 2  # cooldown after each closed trade — change this to adjust
         self._cooldown_end = None
-        self.DAILY_PNL_WARNING = 1000  # show warning when daily PnL exceeds this amount
+        self.DAILY_PNL_WARNING = 1000  # show warning when daily PnL exceeds or dips below this amount
 
         self.create_widgets()
         self._apply_preset("Medium")
