@@ -711,9 +711,13 @@ Position will update when orders fill."""
 
     def update_execute_button(self, *_args):
         """Update LONG/SHORT button colors based on connection and existing positions."""
-        has_any_position = self.ib_conn.active_long or self.ib_conn.active_short
+        selected = self.symbol_var.get()
+        has_position_in_selected = (
+            (self.ib_conn.active_long or self.ib_conn.active_short)
+            and self.ib_conn.active_symbol == selected
+        )
         in_cooldown = self._cooldown_end is not None and datetime.now() < self._cooldown_end
-        self._execute_enabled = self.ib_conn.connected and not has_any_position and not in_cooldown
+        self._execute_enabled = self.ib_conn.connected and not has_position_in_selected and not in_cooldown
         if self._execute_enabled:
             self.long_btn.itemconfig(self._long_rect, fill=self._color_long)
             self.long_btn.config(cursor="hand2")
