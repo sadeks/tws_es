@@ -24,7 +24,7 @@ class TradingUI:
         self._tp_debounce_id = None
         self._had_position = False  # tracks position state for broker stop detection
         self._expect_position_gone = False  # set when we triggered the flatten ourselves
-        self.COOLDOWN_MINUTES = 2  # cooldown after each closed trade — change this to adjust
+        self.COOLDOWN_MINUTES = 1  # cooldown after each closed trade — change this to adjust
         self._cooldown_end = None
         self.DAILY_PNL_WARNING = 1000  # show warning when daily PnL exceeds or dips below this amount
 
@@ -713,9 +713,8 @@ Position will update when orders fill."""
         """Update LONG/SHORT button colors based on connection and existing positions."""
         selected = self.symbol_var.get()
         has_position_in_selected = (
-            (self.ib_conn.active_long or self.ib_conn.active_short)
-            and self.ib_conn.active_symbol == selected
-        )
+            self.ib_conn.active_long or self.ib_conn.active_short
+        ) and self.ib_conn.active_symbol == selected
         in_cooldown = self._cooldown_end is not None and datetime.now() < self._cooldown_end
         self._execute_enabled = self.ib_conn.connected and not has_position_in_selected and not in_cooldown
         if self._execute_enabled:
