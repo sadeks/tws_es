@@ -26,7 +26,8 @@ class TradingUI:
         self._expect_position_gone = False  # set when we triggered the flatten ourselves
         self.COOLDOWN_MINUTES = 3  # cooldown after each closed trade — change this to adjust
         self._cooldown_end = None
-        self.DAILY_PNL_WARNING = 1000  # show warning when daily PnL exceeds or dips below this amount
+        self.DAILY_PNL_WARNING = 600  # show warning when daily PnL dips below this amount
+        self.DAILY_PNL_TARGET = 1200  # show warning when daily PnL exceeds this amount
 
         self.create_widgets()
         self._apply_preset("Scalp")
@@ -153,7 +154,7 @@ class TradingUI:
         ttk.Label(trade_frame, text="Target (pts):").grid(row=6, column=0, sticky="w", pady=5)
         target_frame = ttk.Frame(trade_frame)
         target_frame.grid(row=6, column=1, sticky="w", pady=5)
-        self.target_points_var = tk.StringVar(value="20")
+        self.target_points_var = tk.StringVar(value="30")
         self.target_entry = ttk.Entry(target_frame, textvariable=self.target_points_var, width=5)
         self.target_entry.pack(side="left")
         self.tp_enabled_var = tk.BooleanVar(value=True)
@@ -328,9 +329,10 @@ class TradingUI:
         print(f"TP input settled: target = {self.target_points_var.get()}")
 
     def _update_daily_pnl_warning(self):
+
         daily_pnl = self.ib_conn.get_daily_pnl()
         if daily_pnl is not None:
-            if daily_pnl >= self.DAILY_PNL_WARNING:
+            if daily_pnl >= self.DAILY_PNL_TARGET:
                 self.pnl_warning_label.config(
                     text="Daily Goal Reached\n Take light trades only if you must continue!!!", fg="green"
                 )
@@ -709,8 +711,18 @@ Position will update when orders fill."""
         if self._execute_enabled:
             self.execute_trade(direction)
 
+    def _pnl_warning_active(self):
+        return bool(self.pnl_warning_label.cget("text"))
+
     def update_execute_button(self, *_args):
         """Update LONG/SHORT button colors based on connection and existing positions."""
+        if self._pnl_warning_active():
+            self._execute_enabled = False
+            self.long_btn.itemconfig(self._long_rect, fill=self._color_dim)
+            self.long_btn.config(cursor="")
+            self.short_btn.itemconfig(self._short_rect, fill=self._color_dim)
+            self.short_btn.config(cursor="")
+            return
         selected = self.symbol_var.get()
         has_position_in_selected = (
             self.ib_conn.active_long or self.ib_conn.active_short
@@ -740,6 +752,9 @@ Position will update when orders fill."""
 
     def update_flatten_button(self):
         """Update flatten button state based on active positions"""
+        if self._pnl_warning_active():
+            self.flatten_btn.config(state="disabled")
+            return
         if self.ib_conn.active_long or self.ib_conn.active_short:
             self.flatten_btn.config(state="normal")
         else:
@@ -747,6 +762,9 @@ Position will update when orders fill."""
 
     def update_breakeven_button(self):
         """Update breakeven button state - only enable if price is favorable"""
+        if self._pnl_warning_active():
+            self.breakeven_btn.config(state="disabled")
+            return
         if not (self.ib_conn.active_long or self.ib_conn.active_short):
             self.breakeven_btn.config(state="disabled")
             return
@@ -847,8 +865,8 @@ Position will update when orders fill."""
         "Hold Time",
         "P&L ($)",
         "Exit Reason",
-        "Followed Rules",
-        "Notes",
+        "Good Chart Level",
+        "Pitnoise Confirmation",
     ]
 
     def _capture_journal_data(self, close_price):
@@ -890,7 +908,7 @@ Position will update when orders fill."""
         if ep and cp:
             data["pnl"] = ((cp - ep) if data["direction"] == "LONG" else (ep - cp)) * qty * mul
 
-    def _save_journal(self, data, reason, followed_rules, notes):
+    def _save_journal(self, data, reason, good_chart, pitnoise):
         """Append one row to the CSV journal."""
         file_exists = os.path.exists(self._JOURNAL_FILE)
         with open(self._JOURNAL_FILE, "a", newline="") as f:
@@ -908,8 +926,8 @@ Position will update when orders fill."""
                     data["hold_time"],
                     f"{data['pnl']:.2f}",
                     reason,
-                    "Yes" if followed_rules else "No",
-                    notes,
+                    "Yes" if good_chart else "No",
+                    "Yes" if pitnoise else "No",
                 ]
             )
         print(f"Journal saved to {self._JOURNAL_FILE}")
@@ -917,14 +935,13 @@ Position will update when orders fill."""
     def _show_journal_popup(self, data, reason):
         """Show the post-trade journal popup."""
         popup = tk.Toplevel(self.root)
-        popup.title("How did this trade go?")
-        popup.geometry("420x380")
+        popup.title("Trade Review")
+        popup.geometry("320x240")
         popup.resizable(False, False)
         popup.grab_set()  # modal
 
         pad = {"padx": 16, "pady": 6}
 
-        # Exit reason (read-only info)
         tk.Label(
             popup,
             text=f"Exit: {reason}  |  {data['symbol']} {data['direction']}  |  P&L: ${data['pnl']:+.0f}",
@@ -934,24 +951,20 @@ Position will update when orders fill."""
 
         ttk.Separator(popup, orient="horizontal").pack(fill="x", padx=16, pady=4)
 
-        # Did I follow my rules?
-        tk.Label(popup, text="Did I follow my rules?", font=("Arial", 11, "bold")).pack(anchor="w", **pad)
-        followed_var = tk.BooleanVar(value=True)
-        rules_frame = tk.Frame(popup)
-        rules_frame.pack(anchor="w", padx=16)
-        tk.Radiobutton(rules_frame, text="Yes", variable=followed_var, value=True).pack(side="left")
-        tk.Radiobutton(rules_frame, text="No", variable=followed_var, value=False).pack(side="left", padx=(12, 0))
+        def yes_no_row(parent, question):
+            tk.Label(parent, text=question, font=("Arial", 11, "bold")).pack(anchor="w", padx=16, pady=(6, 2))
+            var = tk.BooleanVar(value=True)
+            row = tk.Frame(parent)
+            row.pack(anchor="w", padx=16)
+            tk.Radiobutton(row, text="Yes", variable=var, value=True).pack(side="left")
+            tk.Radiobutton(row, text="No", variable=var, value=False).pack(side="left", padx=(12, 0))
+            return var
 
-        ttk.Separator(popup, orient="horizontal").pack(fill="x", padx=16, pady=4)
+        good_chart_var = yes_no_row(popup, "Good chart level?")
+        pitnoise_var = yes_no_row(popup, "Pitnoise confirmation?")
 
-        # Why did I take this trade?
-        tk.Label(popup, text="Why did I take this trade?", font=("Arial", 11, "bold")).pack(anchor="w", **pad)
-        notes_text = tk.Text(popup, height=6, wrap="word", font=("Arial", 10))
-        notes_text.pack(fill="x", padx=16)
-
-        # Save button
         def on_save():
-            self._save_journal(data, reason, followed_var.get(), notes_text.get("1.0", "end").strip())
+            self._save_journal(data, reason, good_chart_var.get(), pitnoise_var.get())
             popup.destroy()
 
         ttk.Button(popup, text="Save", command=on_save).pack(pady=12)
