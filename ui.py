@@ -24,12 +24,12 @@ class TradingUI:
         self._tp_debounce_id = None
         self._had_position = False  # tracks position state for broker stop detection
         self._expect_position_gone = False  # set when we triggered the flatten ourselves
-        self.COOLDOWN_MINUTES = 1  # cooldown after each closed trade — change this to adjust
+        self.COOLDOWN_MINUTES = 3  # cooldown after each closed trade — change this to adjust
         self._cooldown_end = None
         self.DAILY_PNL_WARNING = 1000  # show warning when daily PnL exceeds or dips below this amount
 
         self.create_widgets()
-        self._apply_preset("Medium")
+        self._apply_preset("Scalp")
         self.update_flatten_button()
 
         # Trace variables to update max loss display
@@ -169,7 +169,7 @@ class TradingUI:
         self._active_preset = None
         self._preset_buttons = {}
         self._preset_rects = {}
-        for name in ("Light", "Medium", "Heavy"):
+        for name in ("Light", "Medium", "Heavy", "Scalp"):
             canvas = tk.Canvas(preset_btn_frame, width=70, height=26, highlightthickness=0)
             rect = canvas.create_rectangle(0, 0, 70, 26, fill=self._color_preset_inactive, outline="")
             canvas.create_text(35, 13, text=name, fill="white", font=("Arial", 10))
