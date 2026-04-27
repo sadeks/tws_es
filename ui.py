@@ -852,7 +852,6 @@ Position will update when orders fill."""
     ]
 
     def _capture_journal_data(self, close_price):
-        return
         """Snapshot current position data before it gets reset."""
         conn = self.ib_conn
         symbol = conn.active_symbol or self.symbol_var.get()
