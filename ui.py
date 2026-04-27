@@ -333,13 +333,9 @@ class TradingUI:
         daily_pnl = self.ib_conn.get_daily_pnl()
         if daily_pnl is not None:
             if daily_pnl >= self.DAILY_PNL_TARGET:
-                self.pnl_warning_label.config(
-                    text="Daily Goal Reached\n Take light trades only if you must continue!!!", fg="green"
-                )
+                self.pnl_warning_label.config(text="Daily Goal Reached\n Close Laptop and go walk!", fg="green")
             elif daily_pnl <= -self.DAILY_PNL_WARNING:
-                self.pnl_warning_label.config(
-                    text="Daily Loss Limit Hit\n Consider stopping trading for the day!!!", fg="red"
-                )
+                self.pnl_warning_label.config(text="Daily Loss Limit Hit\n Close Laptop and go walk!!!", fg="red")
         else:
             self.pnl_warning_label.config(text="")
 
