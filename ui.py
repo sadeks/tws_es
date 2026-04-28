@@ -24,9 +24,11 @@ class TradingUI:
         self._tp_debounce_id = None
         self._had_position = False  # tracks position state for broker stop detection
         self._expect_position_gone = False  # set when we triggered the flatten ourselves
-        self.COOLDOWN_MINUTES = 3  # cooldown after each closed trade — change this to adjust
+        self.COOLDOWN_MINUTES = 5  # cooldown after each closed trade — change this to adjust
         self._cooldown_end = None
-        self.DAILY_PNL_WARNING = 600  # show warning when daily PnL dips below this amount
+        self.DAILY_PNL_WARNING = (
+            800  # DO NOT CHANGE THIS => this means 4 scalps in a row are wrong and your read of the market today is off
+        )
         self.DAILY_PNL_TARGET = 1200  # show warning when daily PnL exceeds this amount
 
         self.create_widgets()
@@ -748,9 +750,6 @@ Position will update when orders fill."""
 
     def update_flatten_button(self):
         """Update flatten button state based on active positions"""
-        if self._pnl_warning_active():
-            self.flatten_btn.config(state="disabled")
-            return
         if self.ib_conn.active_long or self.ib_conn.active_short:
             self.flatten_btn.config(state="normal")
         else:
