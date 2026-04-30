@@ -20,6 +20,7 @@ class TradingUI:
         self._flattening = False  # Flag to prevent multiple flatten calls
         self._tp_input_settled = True
         self._tp_debounce_id = None
+        self._app_locked = True
         self.DAILY_PNL_WARNING = (
             600  # DO NOT CHANGE THIS => this means 3 scalps in a row are wrong and your read of the market today is off
         )
@@ -76,12 +77,25 @@ class TradingUI:
         top_frame = ttk.Frame(self.root)
         top_frame.pack(side="top", fill="x")
 
-        # Status Frame (at very top)
+        # Status Frame (at very top) — status label + lock toggle side by side
         status_frame = ttk.Frame(top_frame, padding=0)
-        status_frame.pack(fill="x", padx=0, pady=(10, 0))
+        status_frame.pack(fill="x", padx=10, pady=(10, 0))
 
         self.status_label = ttk.Label(status_frame, text="Not Connected", foreground="red")
-        self.status_label.pack()
+        self.status_label.pack(side="left")
+
+        # iOS-style pill toggle
+        _tw, _th = 50, 28
+        self.lock_btn = tk.Canvas(status_frame, width=_tw, height=_th, highlightthickness=0,
+                                  bg=ttk.Style().lookup("TFrame", "background") or "#f0f0f0")
+        self._lock_bg_l  = self.lock_btn.create_oval(0, 0, _th, _th, fill="#c0392b", outline="")
+        self._lock_bg_r  = self.lock_btn.create_oval(_tw - _th, 0, _tw, _th, fill="#c0392b", outline="")
+        self._lock_bg_m  = self.lock_btn.create_rectangle(_th // 2, 0, _tw - _th // 2, _th, fill="#c0392b", outline="")
+        self._lock_thumb = self.lock_btn.create_oval(2, 2, _th - 2, _th - 2, fill="white", outline="")
+        self.lock_btn.bind("<Button-1>", lambda e: self._on_lock_toggle())
+        self.lock_btn.pack(side="right", padx=(4, 0))
+        self.lock_state_label = ttk.Label(status_frame, text="Disabled", foreground="#c0392b")
+        self.lock_state_label.pack(side="right")
 
         # Connection Frame
         conn_frame = ttk.LabelFrame(top_frame, text="Connection", padding=10)
@@ -679,9 +693,28 @@ Position will update when orders fill."""
     def _pnl_warning_active(self):
         return bool(self.pnl_warning_label.cget("text"))
 
+    def _on_lock_toggle(self):
+        tw, th = 50, 28
+        if self._app_locked:
+            if not messagebox.askyesno("Confirm", "Do you have a read on the market?"):
+                return
+            self._app_locked = False
+            color = "#27ae60"
+            self.lock_btn.coords(self._lock_thumb, tw - th + 2, 2, tw - 2, th - 2)
+            self.lock_state_label.config(text="Enabled", foreground="#27ae60")
+        else:
+            self._app_locked = True
+            color = "#c0392b"
+            self.lock_btn.coords(self._lock_thumb, 2, 2, th - 2, th - 2)
+            self.lock_state_label.config(text="Disabled", foreground="#c0392b")
+        for item in (self._lock_bg_l, self._lock_bg_r, self._lock_bg_m):
+            self.lock_btn.itemconfig(item, fill=color)
+        self.update_execute_button()
+        self.update_breakeven_button()
+
     def update_execute_button(self, *_args):
         """Update LONG/SHORT button colors based on connection and existing positions."""
-        if self._pnl_warning_active():
+        if self._app_locked or self._pnl_warning_active():
             self._execute_enabled = False
             self.long_btn.itemconfig(self._long_rect, fill=self._color_dim)
             self.long_btn.config(cursor="")
@@ -723,7 +756,7 @@ Position will update when orders fill."""
 
     def update_breakeven_button(self):
         """Update breakeven button state - only enable if price is favorable"""
-        if self._pnl_warning_active():
+        if self._app_locked or self._pnl_warning_active():
             self.breakeven_btn.config(state="disabled")
             return
         if not (self.ib_conn.active_long or self.ib_conn.active_short):
