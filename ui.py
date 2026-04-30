@@ -4,7 +4,6 @@ import asyncio
 import json
 import os
 import threading
-from datetime import datetime
 from api import IBConnection
 
 
@@ -154,7 +153,7 @@ class TradingUI:
         self.target_points_var = tk.StringVar(value="30")
         self.target_entry = ttk.Entry(target_frame, textvariable=self.target_points_var, width=5)
         self.target_entry.pack(side="left")
-        self.tp_enabled_var = tk.BooleanVar(value=True)
+        self.tp_enabled_var = tk.BooleanVar(value=False)
         self.tp_checkbox = ttk.Checkbutton(target_frame, text="Take Profit", variable=self.tp_enabled_var)
         self.tp_checkbox.pack(side="left", padx=(10, 0))
 
