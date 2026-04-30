@@ -225,13 +225,15 @@ class IBConnection:
         order = MarketOrder(action, quantity)
         trade = self.ib.placeOrder(contract, order)
 
-        # Wait for fill
+        # Wait for fill — sleep yields the event loop so IB callbacks are processed
         while not trade.isDone():
-            await self.ib.updateEvent
+            await asyncio.sleep(0.05)
+
+        # Brief extra wait for execution reports to arrive after status update
+        await asyncio.sleep(0.2)
 
         # Quick exit if we don't need fill price
         if not wait_for_fill:
-            await asyncio.sleep(0.1)  # Brief pause to let fill notification come through
             fill_price = trade.orderStatus.avgFillPrice or 0.0
             return trade, fill_price
 
@@ -240,13 +242,12 @@ class IBConnection:
         for attempt in range(5):
             await asyncio.sleep(0.5)
 
-            # Try to get fill price from fills
+            # Use execution.price (per-fill price), not avgPrice (cumulative running avg)
             if trade.fills:
                 total_qty = sum(f.execution.shares for f in trade.fills)
-                weighted_price = sum(f.execution.avgPrice * f.execution.shares for f in trade.fills)
+                weighted_price = sum(f.execution.price * f.execution.shares for f in trade.fills)
                 fill_price = weighted_price / total_qty if total_qty > 0 else 0.0
 
-            # Fallback to orderStatus
             if fill_price == 0.0 and trade.orderStatus.avgFillPrice:
                 fill_price = trade.orderStatus.avgFillPrice
 
@@ -254,13 +255,6 @@ class IBConnection:
                 break
 
             print(f"Waiting for fill price (attempt {attempt + 1}/5)...")
-
-        # Last resort: get current market price
-        if fill_price == 0.0:
-            print("Fill price not available from order, fetching market price...")
-            market_price = await self.get_market_price(contract)
-            if market_price:
-                fill_price = market_price
 
         return trade, fill_price
 

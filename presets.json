@@ -13,9 +13,9 @@
   },
   "Heavy": {
     "symbol": "ES",
-    "quantity": 2,
-    "ladder": "7.5",
-    "stop_loss": 20
+    "quantity": 1,
+    "ladder": "20,40",
+    "stop_loss": 50
   },
   "Scalp": {
     "symbol": "ES",

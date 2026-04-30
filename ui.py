@@ -1,11 +1,10 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import asyncio
-import csv
 import json
 import os
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 from api import IBConnection
 
 
@@ -22,12 +21,8 @@ class TradingUI:
         self._flattening = False  # Flag to prevent multiple flatten calls
         self._tp_input_settled = True
         self._tp_debounce_id = None
-        self._had_position = False  # tracks position state for broker stop detection
-        self._expect_position_gone = False  # set when we triggered the flatten ourselves
-        self.COOLDOWN_MINUTES = 5  # cooldown after each closed trade — change this to adjust
-        self._cooldown_end = None
         self.DAILY_PNL_WARNING = (
-            800  # DO NOT CHANGE THIS => this means 4 scalps in a row are wrong and your read of the market today is off
+            600  # DO NOT CHANGE THIS => this means 3 scalps in a row are wrong and your read of the market today is off
         )
         self.DAILY_PNL_TARGET = 1200  # show warning when daily PnL exceeds this amount
 
@@ -331,15 +326,15 @@ class TradingUI:
         print(f"TP input settled: target = {self.target_points_var.get()}")
 
     def _update_daily_pnl_warning(self):
-
-        daily_pnl = self.ib_conn.get_daily_pnl()
-        if daily_pnl is not None:
-            if daily_pnl >= self.DAILY_PNL_TARGET:
-                self.pnl_warning_label.config(text="Daily Goal Reached\n Close Laptop and go walk!", fg="green")
-            elif daily_pnl <= -self.DAILY_PNL_WARNING:
-                self.pnl_warning_label.config(text="Daily Loss Limit Hit\n Close Laptop and go walk!!!", fg="red")
-        else:
-            self.pnl_warning_label.config(text="")
+        return
+        # daily_pnl = self.ib_conn.get_daily_pnl()
+        # if daily_pnl is not None:
+        #     if daily_pnl >= self.DAILY_PNL_TARGET:
+        #         self.pnl_warning_label.config(text="Daily Goal Reached\n Close Laptop and go walk!", fg="green")
+        #     elif daily_pnl <= -self.DAILY_PNL_WARNING:
+        #         self.pnl_warning_label.config(text="Daily Loss Limit Hit\n Close Laptop and go walk!!!", fg="red")
+        # else:
+        #     self.pnl_warning_label.config(text="")
 
     def _start_ui_timer(self):
         """Start the periodic UI update timer"""
@@ -349,8 +344,6 @@ class TradingUI:
     async def _auto_flatten(self, symbol):
         """Auto-flatten position when take profit is hit"""
         try:
-            journal_data = self._capture_journal_data(0.0)  # capture before reset
-            self._expect_position_gone = True
             result = await self.ib_conn.flatten_position(symbol)
             if result["success"]:
                 closed_list = "\n".join(result.get("closed_contracts", []))
@@ -364,14 +357,8 @@ Average Fill: {result['close_price']:.2f}
 Orders Cancelled: {result['cancelled_orders']}
 """
                 self.root.after(0, lambda: self.update_exec_log(info))
-                self._start_cooldown()
                 self.root.after(0, self._update_daily_pnl_warning)
-                if journal_data:
-                    journal_data["close_price"] = result["close_price"]
-                    self._compute_journal_pnl(journal_data)
-                    self.root.after(0, lambda d=journal_data: self._show_journal_popup(d, "Take Profit"))
             else:
-                self._expect_position_gone = False
                 self.root.after(0, lambda: self.update_exec_log(f"ERROR: {result['message']}\n"))
         finally:
             self._flattening = False
@@ -419,26 +406,7 @@ Orders Cancelled: {result['cancelled_orders']}
                     self.update_exec_log("Take profit hit! Flattening position...\n")
                     self._schedule(self._auto_flatten(symbol))
         else:
-            if self._cooldown_end and datetime.now() < self._cooldown_end:
-                remaining = int((self._cooldown_end - datetime.now()).total_seconds())
-                self.pnl_label.config(text=f"Cooldown: {remaining // 60}:{remaining % 60:02d}", fg="orange")
-            else:
-                self._cooldown_end = None
-                self.pnl_label.config(text="")
-
-        # Detect broker stop: position disappeared without us triggering a flatten
-        currently_has_position = self.ib_conn.active_long or self.ib_conn.active_short
-        if self._had_position and not currently_has_position:
-            if self._expect_position_gone:
-                self._expect_position_gone = False
-            else:
-                # Broker stop fired — capture data with current price as approx exit
-                data = self._capture_journal_data(self.ib_conn.current_price or 0.0)
-                self._compute_journal_pnl(data)
-                self._start_cooldown()
-                self._update_daily_pnl_warning()
-                self.root.after(100, lambda d=data: self._show_journal_popup(d, "Stop Loss"))
-        self._had_position = currently_has_position
+            self.pnl_label.config(text="")
 
         # Update button states
         self.update_flatten_button()
@@ -725,8 +693,7 @@ Position will update when orders fill."""
         has_position_in_selected = (
             self.ib_conn.active_long or self.ib_conn.active_short
         ) and self.ib_conn.active_symbol == selected
-        in_cooldown = self._cooldown_end is not None and datetime.now() < self._cooldown_end
-        self._execute_enabled = self.ib_conn.connected and not has_position_in_selected and not in_cooldown
+        self._execute_enabled = self.ib_conn.connected and not has_position_in_selected
         if self._execute_enabled:
             self.long_btn.itemconfig(self._long_rect, fill=self._color_long)
             self.long_btn.config(cursor="hand2")
@@ -844,126 +811,6 @@ Position will update when orders fill."""
             self.max_loss_label.config(text="")
             self.ladder_info_label.config(text="")
 
-    def _start_cooldown(self):
-        self._cooldown_end = datetime.now() + timedelta(minutes=self.COOLDOWN_MINUTES)
-
-    # ── Journal ──────────────────────────────────────────────────────────────
-
-    _JOURNAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trade_journal.csv")
-    _JOURNAL_HEADERS = [
-        "Date",
-        "Symbol",
-        "Direction",
-        "Entry Price",
-        "Exit Price",
-        "Rungs Used",
-        "Hold Time",
-        "P&L ($)",
-        "Exit Reason",
-        "Good Chart Level",
-        "Pitnoise Confirmation",
-    ]
-
-    def _capture_journal_data(self, close_price):
-        """Snapshot current position data before it gets reset."""
-        conn = self.ib_conn
-        symbol = conn.active_symbol or self.symbol_var.get()
-        direction = "LONG" if conn.active_long else "SHORT"
-        entry_price = conn.avg_entry_price
-        quantity = conn.current_quantity
-        multiplier = conn.MULTIPLIERS.get(symbol, 50.0)
-        initial_qty = conn.initial_quantity or 1
-        rungs = max(1, round(quantity / initial_qty)) if quantity > 0 else 1
-
-        hold_time = ""
-        if conn.entry_time:
-            delta = datetime.now() - conn.entry_time
-            secs = int(delta.total_seconds())
-            hold_time = f"{secs // 60}m {secs % 60}s"
-
-        return {
-            "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "symbol": symbol,
-            "direction": direction,
-            "entry_price": entry_price,
-            "close_price": close_price,
-            "rungs": rungs,
-            "hold_time": hold_time,
-            "pnl": 0.0,
-            "multiplier": multiplier,
-            "quantity": quantity,
-        }
-
-    def _compute_journal_pnl(self, data):
-        """Recalculate P&L once close_price is known."""
-        ep = data["entry_price"]
-        cp = data["close_price"]
-        qty = data["quantity"]
-        mul = data["multiplier"]
-        if ep and cp:
-            data["pnl"] = ((cp - ep) if data["direction"] == "LONG" else (ep - cp)) * qty * mul
-
-    def _save_journal(self, data, reason, good_chart, pitnoise):
-        """Append one row to the CSV journal."""
-        file_exists = os.path.exists(self._JOURNAL_FILE)
-        with open(self._JOURNAL_FILE, "a", newline="") as f:
-            writer = csv.writer(f)
-            if not file_exists:
-                writer.writerow(self._JOURNAL_HEADERS)
-            writer.writerow(
-                [
-                    data["date"],
-                    data["symbol"],
-                    data["direction"],
-                    f"{data['entry_price']:.2f}",
-                    f"{data['close_price']:.2f}",
-                    data["rungs"],
-                    data["hold_time"],
-                    f"{data['pnl']:.2f}",
-                    reason,
-                    "Yes" if good_chart else "No",
-                    "Yes" if pitnoise else "No",
-                ]
-            )
-        print(f"Journal saved to {self._JOURNAL_FILE}")
-
-    def _show_journal_popup(self, data, reason):
-        """Show the post-trade journal popup."""
-        popup = tk.Toplevel(self.root)
-        popup.title("Trade Review")
-        popup.geometry("320x240")
-        popup.resizable(False, False)
-        popup.grab_set()  # modal
-
-        pad = {"padx": 16, "pady": 6}
-
-        tk.Label(
-            popup,
-            text=f"Exit: {reason}  |  {data['symbol']} {data['direction']}  |  P&L: ${data['pnl']:+.0f}",
-            font=("Arial", 10),
-            fg="#888888",
-        ).pack(anchor="w", **pad)
-
-        ttk.Separator(popup, orient="horizontal").pack(fill="x", padx=16, pady=4)
-
-        def yes_no_row(parent, question):
-            tk.Label(parent, text=question, font=("Arial", 11, "bold")).pack(anchor="w", padx=16, pady=(6, 2))
-            var = tk.BooleanVar(value=True)
-            row = tk.Frame(parent)
-            row.pack(anchor="w", padx=16)
-            tk.Radiobutton(row, text="Yes", variable=var, value=True).pack(side="left")
-            tk.Radiobutton(row, text="No", variable=var, value=False).pack(side="left", padx=(12, 0))
-            return var
-
-        good_chart_var = yes_no_row(popup, "Good chart level?")
-        pitnoise_var = yes_no_row(popup, "Pitnoise confirmation?")
-
-        def on_save():
-            self._save_journal(data, reason, good_chart_var.get(), pitnoise_var.get())
-            popup.destroy()
-
-        ttk.Button(popup, text="Save", command=on_save).pack(pady=12)
-
     # ── Flatten ───────────────────────────────────────────────────────────────
 
     def flatten_position(self):
@@ -972,8 +819,6 @@ Position will update when orders fill."""
         self.update_exec_log("Flattening position...\n")
 
         symbol = self.ib_conn.active_symbol or self.symbol_var.get()
-        journal_data = self._capture_journal_data(0.0)  # capture before reset
-        self._expect_position_gone = True
         result = self._run_sync(self.ib_conn.flatten_position(symbol))
 
         if result["success"]:
@@ -990,14 +835,8 @@ Orders Cancelled: {result['cancelled_orders']}
 All positions closed and orders cancelled.
             """
             self.update_exec_log(info)
-            self._start_cooldown()
             self._update_daily_pnl_warning()
-            if journal_data:
-                journal_data["close_price"] = result["close_price"]
-                self._compute_journal_pnl(journal_data)
-                self._show_journal_popup(journal_data, "Manual")
         else:
-            self._expect_position_gone = False
             self.update_exec_log(f"ERROR: {result['message']}\n")
             messagebox.showerror("Error", result["message"])
 
