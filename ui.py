@@ -21,10 +21,8 @@ class TradingUI:
         self._tp_input_settled = True
         self._tp_debounce_id = None
         self._app_locked = True
-        self.DAILY_PNL_WARNING = (
-            600  # DO NOT CHANGE THIS => this means 3 scalps in a row are wrong and your read of the market today is off
-        )
-        self.DAILY_PNL_TARGET = 1200  # show warning when daily PnL exceeds this amount
+        self.DAILY_PNL_WARNING = 800  # DO NOT CHANGE THIS
+        self.DAILY_PNL_TARGET = 2000  # show warning when daily PnL exceeds this amount
 
         self.create_widgets()
         self._apply_preset("Scalp")
@@ -86,11 +84,16 @@ class TradingUI:
 
         # iOS-style pill toggle
         _tw, _th = 50, 28
-        self.lock_btn = tk.Canvas(status_frame, width=_tw, height=_th, highlightthickness=0,
-                                  bg=ttk.Style().lookup("TFrame", "background") or "#f0f0f0")
-        self._lock_bg_l  = self.lock_btn.create_oval(0, 0, _th, _th, fill="#c0392b", outline="")
-        self._lock_bg_r  = self.lock_btn.create_oval(_tw - _th, 0, _tw, _th, fill="#c0392b", outline="")
-        self._lock_bg_m  = self.lock_btn.create_rectangle(_th // 2, 0, _tw - _th // 2, _th, fill="#c0392b", outline="")
+        self.lock_btn = tk.Canvas(
+            status_frame,
+            width=_tw,
+            height=_th,
+            highlightthickness=0,
+            bg=ttk.Style().lookup("TFrame", "background") or "#f0f0f0",
+        )
+        self._lock_bg_l = self.lock_btn.create_oval(0, 0, _th, _th, fill="#c0392b", outline="")
+        self._lock_bg_r = self.lock_btn.create_oval(_tw - _th, 0, _tw, _th, fill="#c0392b", outline="")
+        self._lock_bg_m = self.lock_btn.create_rectangle(_th // 2, 0, _tw - _th // 2, _th, fill="#c0392b", outline="")
         self._lock_thumb = self.lock_btn.create_oval(2, 2, _th - 2, _th - 2, fill="white", outline="")
         self.lock_btn.bind("<Button-1>", lambda e: self._on_lock_toggle())
         self.lock_btn.pack(side="right", padx=(4, 0))
@@ -339,15 +342,14 @@ class TradingUI:
         print(f"TP input settled: target = {self.target_points_var.get()}")
 
     def _update_daily_pnl_warning(self):
-        return
-        # daily_pnl = self.ib_conn.get_daily_pnl()
-        # if daily_pnl is not None:
-        #     if daily_pnl >= self.DAILY_PNL_TARGET:
-        #         self.pnl_warning_label.config(text="Daily Goal Reached\n Close Laptop and go walk!", fg="green")
-        #     elif daily_pnl <= -self.DAILY_PNL_WARNING:
-        #         self.pnl_warning_label.config(text="Daily Loss Limit Hit\n Close Laptop and go walk!!!", fg="red")
-        # else:
-        #     self.pnl_warning_label.config(text="")
+        daily_pnl = self.ib_conn.get_daily_pnl()
+        if daily_pnl is not None:
+            if daily_pnl >= self.DAILY_PNL_TARGET:
+                self.pnl_warning_label.config(text="Daily Goal Reached\n Close Laptop and go walk!", fg="green")
+            elif daily_pnl <= -self.DAILY_PNL_WARNING:
+                self.pnl_warning_label.config(text="Daily Loss Limit Hit\n Close Laptop and go walk!!!", fg="red")
+        else:
+            self.pnl_warning_label.config(text="")
 
     def _start_ui_timer(self):
         """Start the periodic UI update timer"""
