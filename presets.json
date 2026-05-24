@@ -1,8 +1,8 @@
 {
   "Daytrade": {
-    "symbol": "MES",
-    "quantity": 5,
-    "ladder": "5,7.5",
+    "symbol": "ES",
+    "quantity": 1,
+    "ladder": "2.5, 5",
     "stop_loss": 15
   },
   "Swing": {
@@ -15,6 +15,6 @@
     "symbol": "ES",
     "quantity": 3,
     "ladder": "",
-    "stop_loss": 5
+    "stop_loss": 3
   }
 }

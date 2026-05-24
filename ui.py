@@ -21,11 +21,11 @@ class TradingUI:
         self._tp_input_settled = True
         self._tp_debounce_id = None
         self._app_locked = True
-        self.DAILY_PNL_WARNING = 800  # DO NOT CHANGE THIS
-        self.DAILY_PNL_TARGET = 2000  # show warning when daily PnL exceeds this amount
+        self.DAILY_PNL_WARNING = 4000  # DO NOT CHANGE THIS
+        self.DAILY_PNL_TARGET = 20000  # show warning when daily PnL exceeds this amount
 
         self.create_widgets()
-        self._apply_preset("Scalp")
+        self._apply_preset("Scalp")  # Load default preset values
         self.update_flatten_button()
 
         # Trace variables to update max loss display
@@ -183,7 +183,7 @@ class TradingUI:
         self._active_preset = None
         self._preset_buttons = {}
         self._preset_rects = {}
-        for name in ("Light", "Medium", "Heavy", "Scalp"):
+        for name in ("Daytrade", "Swing", "Scalp"):
             canvas = tk.Canvas(preset_btn_frame, width=70, height=26, highlightthickness=0)
             rect = canvas.create_rectangle(0, 0, 70, 26, fill=self._color_preset_inactive, outline="")
             canvas.create_text(35, 13, text=name, fill="white", font=("Arial", 10))
