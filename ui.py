@@ -3,6 +3,7 @@ from tkinter import ttk, messagebox
 import asyncio
 import json
 import os
+import time
 import threading
 from api import IBConnection
 
@@ -10,7 +11,7 @@ from api import IBConnection
 class TradingUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Futures Trader")
+        self.root.title("Futures Ladder")
         self.root.geometry("430x780")
         self.root.resizable(True, True)
 
@@ -20,12 +21,11 @@ class TradingUI:
         self._flattening = False  # Flag to prevent multiple flatten calls
         self._tp_input_settled = True
         self._tp_debounce_id = None
-        self._app_locked = True
-        self.DAILY_PNL_WARNING = 4000  # DO NOT CHANGE THIS
-        self.DAILY_PNL_TARGET = 20000  # show warning when daily PnL exceeds this amount
+        self.DAILY_PNL_WARNING = 300  # DO NOT CHANGE THIS
+        self.DAILY_PNL_TARGET = 500  # show warning when daily PnL exceeds this amount
 
         self.create_widgets()
-        self._apply_preset("Scalp")  # Load default preset values
+        self._apply_preset("Daytrade")  # Load default preset values
         self.update_flatten_button()
 
         # Trace variables to update max loss display
@@ -41,6 +41,9 @@ class TradingUI:
 
         # Debounce target points so typing doesn't trigger TP mid-edit
         self.target_points_var.trace_add("write", self._on_target_points_changed)
+
+        # Auto-connect on load
+        self.root.after(100, self.connect)
 
     def create_widgets(self):
         # Use pack layout - bottom section first to keep it visible when shrinking
@@ -82,23 +85,8 @@ class TradingUI:
         self.status_label = ttk.Label(status_frame, text="Not Connected", foreground="red")
         self.status_label.pack(side="left")
 
-        # iOS-style pill toggle
-        _tw, _th = 50, 28
-        self.lock_btn = tk.Canvas(
-            status_frame,
-            width=_tw,
-            height=_th,
-            highlightthickness=0,
-            bg=ttk.Style().lookup("TFrame", "background") or "#f0f0f0",
-        )
-        self._lock_bg_l = self.lock_btn.create_oval(0, 0, _th, _th, fill="#c0392b", outline="")
-        self._lock_bg_r = self.lock_btn.create_oval(_tw - _th, 0, _tw, _th, fill="#c0392b", outline="")
-        self._lock_bg_m = self.lock_btn.create_rectangle(_th // 2, 0, _tw - _th // 2, _th, fill="#c0392b", outline="")
-        self._lock_thumb = self.lock_btn.create_oval(2, 2, _th - 2, _th - 2, fill="white", outline="")
-        self.lock_btn.bind("<Button-1>", lambda e: self._on_lock_toggle())
-        self.lock_btn.pack(side="right", padx=(4, 0))
-        self.lock_state_label = ttk.Label(status_frame, text="Disabled", foreground="#c0392b")
-        self.lock_state_label.pack(side="right")
+        self.cooldown_label = ttk.Label(status_frame, text="", foreground="#e67e22")
+        self.cooldown_label.pack(side="right")
 
         # Connection Frame
         conn_frame = ttk.LabelFrame(top_frame, text="Connection", padding=10)
@@ -152,22 +140,27 @@ class TradingUI:
         stop_frame.grid(row=4, column=1, sticky="w", pady=5)
         self.stop_entry = ttk.Entry(stop_frame, textvariable=self.stop_points_var, width=12)
         self.stop_entry.pack(side="left")
+        self.trailing_stop_var = tk.BooleanVar(value=False)
+        self.trailing_stop_checkbox = ttk.Checkbutton(stop_frame, text="Trail", variable=self.trailing_stop_var)
+        self.trailing_stop_checkbox.pack(side="left", padx=(6, 0))
         self.min_stop_label = ttk.Label(stop_frame, text="", foreground="orange")
         self.min_stop_label.pack(side="left")
-        self.max_loss_label = ttk.Label(stop_frame, text="Max loss: N/A", foreground="red")
-        self.max_loss_label.pack(side="left")
+
+        # Max loss label below stop loss field
+        self.max_loss_label = ttk.Label(trade_frame, text="Max loss: N/A", foreground="red")
+        self.max_loss_label.grid(row=5, column=1, sticky="w", pady=(0, 2))
 
         # Ladder info row
         ladder_info_frame = ttk.Frame(trade_frame)
-        ladder_info_frame.grid(row=5, column=0, columnspan=2, pady=(0, 5))
+        ladder_info_frame.grid(row=6, column=0, columnspan=2, pady=(0, 5))
         self.ladder_info_label = ttk.Label(ladder_info_frame, text="", foreground="white")
         self.ladder_info_label.pack()
 
         # Target points with Take Profit checkbox
-        ttk.Label(trade_frame, text="Target (pts):").grid(row=6, column=0, sticky="w", pady=5)
+        ttk.Label(trade_frame, text="Target (pts):").grid(row=7, column=0, sticky="w", pady=5)
         target_frame = ttk.Frame(trade_frame)
-        target_frame.grid(row=6, column=1, sticky="w", pady=5)
-        self.target_points_var = tk.StringVar(value="30")
+        target_frame.grid(row=7, column=1, sticky="w", pady=5)
+        self.target_points_var = tk.StringVar(value="5")
         self.target_entry = ttk.Entry(target_frame, textvariable=self.target_points_var, width=5)
         self.target_entry.pack(side="left")
         self.tp_enabled_var = tk.BooleanVar(value=False)
@@ -176,14 +169,14 @@ class TradingUI:
 
         # Preset buttons (Medium / Heavy)
         preset_btn_frame = ttk.Frame(trade_frame)
-        preset_btn_frame.grid(row=7, column=0, columnspan=2, pady=(10, 20))
+        preset_btn_frame.grid(row=8, column=0, columnspan=2, pady=(10, 20))
 
         self._color_preset_active = "#2980b9"
         self._color_preset_inactive = "#555555"
         self._active_preset = None
         self._preset_buttons = {}
         self._preset_rects = {}
-        for name in ("Daytrade", "Swing", "Scalp"):
+        for name in ("Daytrade", "Heavy", "Scalp"):
             canvas = tk.Canvas(preset_btn_frame, width=70, height=26, highlightthickness=0)
             rect = canvas.create_rectangle(0, 0, 70, 26, fill=self._color_preset_inactive, outline="")
             canvas.create_text(35, 13, text=name, fill="white", font=("Arial", 10))
@@ -194,7 +187,7 @@ class TradingUI:
 
         # LONG / SHORT buttons
         exec_btn_frame = ttk.Frame(trade_frame)
-        exec_btn_frame.grid(row=8, column=0, columnspan=2, pady=(8, 15))
+        exec_btn_frame.grid(row=9, column=0, columnspan=2, pady=(8, 15))
 
         self._execute_enabled = False
         self._color_long = "#27ae60"
@@ -361,6 +354,7 @@ class TradingUI:
         try:
             result = await self.ib_conn.flatten_position(symbol)
             if result["success"]:
+                self.ib_conn.start_cooldown()
                 closed_list = "\n".join(result.get("closed_contracts", []))
                 info = f"""
 Take Profit Hit! Position Flattened!
@@ -423,6 +417,14 @@ Orders Cancelled: {result['cancelled_orders']}
         else:
             self.pnl_label.config(text="")
 
+        # Update cooldown display
+        if self.ib_conn.in_cooldown():
+            remaining = max(0.0, self.ib_conn.cooldown_until - time.time())
+            mins, secs = divmod(int(remaining), 60)
+            self.cooldown_label.config(text=f"Inhale/Exhale: {mins}:{secs:02d}")
+        else:
+            self.cooldown_label.config(text="")
+
         # Update button states
         self.update_flatten_button()
         self.update_execute_button()
@@ -441,6 +443,8 @@ Orders Cancelled: {result['cancelled_orders']}
         max_loss,
         ladder_orders,
         title="Orders Placed!",
+        tp_price=None,
+        trailing_stop=False,
     ):
         """Format trade info for display in Execution Log"""
         stop_action = "SELL" if direction == "LONG" else "BUY"
@@ -451,6 +455,11 @@ Orders Cancelled: {result['cancelled_orders']}
                 [f"  - {o['action']} {o['quantity']} {symbol} @ {o['price']:.2f}" for o in ladder_orders]
             )
 
+        tp_info = ""
+        if tp_price is not None:
+            tp_action = "SELL" if direction == "LONG" else "BUY"
+            tp_info = f"\nTake Profit:\n{tp_action} {entry_qty} {symbol} @ {tp_price:.2f} (LIMIT)\n"
+
         return f"""{title}
 
 Symbol: {symbol}
@@ -460,10 +469,10 @@ Entry Price: {entry_price:.2f}
 Expected Avg (if all fill): {expected_avg:.2f}
 
 Stop Loss:
-{stop_action} {stop_qty} {symbol} @ {stop_price:.2f} (STOP)
-Stop Loss: {stop_points:.2f} points
+{stop_action} {stop_qty} {symbol} @ {stop_price:.2f} ({"TRAILING STOP" if trailing_stop else "STOP"})
+Stop Loss: {stop_points:.2f} points trail
 Max Loss: ${max_loss:,.0f}
-{ladder_info}
+{tp_info}{ladder_info}
 
 Position will update when orders fill."""
 
@@ -596,6 +605,11 @@ Position will update when orders fill."""
         if not self.ib_conn.connected:
             messagebox.showerror("Error", "Not connected to IB")
             return
+        if self.ib_conn.in_cooldown():
+            remaining = max(0.0, self.ib_conn.cooldown_until - time.time())
+            mins, secs = divmod(int(remaining), 60)
+            messagebox.showwarning("Cooldown", f"Trade cooldown active. Wait {mins}:{secs:02d}.")
+            return
 
         try:
             quantity = int(self.quantity_var.get())
@@ -627,10 +641,28 @@ Position will update when orders fill."""
             # Get selected symbol
             symbol = self.symbol_var.get()
 
+            is_scalp = self._active_preset == "Scalp"
+            trailing_stop = self.trailing_stop_var.get()
+
+            # In scalp mode with TP enabled, pass tp_points to place a limit order on exchange
+            tp_points = None
+            if is_scalp and self.tp_enabled_var.get():
+                try:
+                    tp_points = float(self.target_points_var.get())
+                except ValueError:
+                    tp_points = None
+
             # Execute trade
             result = self._run_sync(
                 self.ib_conn.execute_trade_with_ladder(
-                    symbol, direction, entry_price, stop_points, quantity, ladder_steps
+                    symbol,
+                    direction,
+                    entry_price,
+                    stop_points,
+                    quantity,
+                    ladder_steps,
+                    tp_points=tp_points,
+                    trailing_stop=trailing_stop,
                 )
             )
 
@@ -652,6 +684,8 @@ Position will update when orders fill."""
                     max_loss=max_loss,
                     ladder_orders=result.get("ladder_orders", []),
                     title="Orders Placed!",
+                    tp_price=result.get("tp_price"),
+                    trailing_stop=trailing_stop,
                 )
                 self.update_exec_log(info)
 
@@ -695,28 +729,9 @@ Position will update when orders fill."""
     def _pnl_warning_active(self):
         return bool(self.pnl_warning_label.cget("text"))
 
-    def _on_lock_toggle(self):
-        tw, th = 50, 28
-        if self._app_locked:
-            if not messagebox.askyesno("Confirm", "Do you have a read on the market?"):
-                return
-            self._app_locked = False
-            color = "#27ae60"
-            self.lock_btn.coords(self._lock_thumb, tw - th + 2, 2, tw - 2, th - 2)
-            self.lock_state_label.config(text="Enabled", foreground="#27ae60")
-        else:
-            self._app_locked = True
-            color = "#c0392b"
-            self.lock_btn.coords(self._lock_thumb, 2, 2, th - 2, th - 2)
-            self.lock_state_label.config(text="Disabled", foreground="#c0392b")
-        for item in (self._lock_bg_l, self._lock_bg_r, self._lock_bg_m):
-            self.lock_btn.itemconfig(item, fill=color)
-        self.update_execute_button()
-        self.update_breakeven_button()
-
     def update_execute_button(self, *_args):
         """Update LONG/SHORT button colors based on connection and existing positions."""
-        if self._app_locked or self._pnl_warning_active():
+        if self._pnl_warning_active() or self.ib_conn.in_cooldown():
             self._execute_enabled = False
             self.long_btn.itemconfig(self._long_rect, fill=self._color_dim)
             self.long_btn.config(cursor="")
@@ -758,7 +773,7 @@ Position will update when orders fill."""
 
     def update_breakeven_button(self):
         """Update breakeven button state - only enable if price is favorable"""
-        if self._app_locked or self._pnl_warning_active():
+        if self._pnl_warning_active():
             self.breakeven_btn.config(state="disabled")
             return
         if not (self.ib_conn.active_long or self.ib_conn.active_short):
@@ -856,6 +871,7 @@ Position will update when orders fill."""
         result = self._run_sync(self.ib_conn.flatten_position(symbol))
 
         if result["success"]:
+            self.ib_conn.start_cooldown()
             closed_list = "\n".join(result.get("closed_contracts", []))
             info = f"""
 Position Flattened!

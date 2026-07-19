@@ -1,7 +1,12 @@
-from ib_async import IB, Future, MarketOrder, StopOrder, LimitOrder
+from ib_async import IB, Future, MarketOrder, StopOrder, LimitOrder, StopLimitOrder, Order
 import asyncio
+import calendar
 import math
+import time
 from datetime import datetime, timedelta
+from pathlib import Path
+
+_COOLDOWN_FILE = Path(__file__).parent / ".cooldown"
 
 
 class IBConnection:
@@ -38,6 +43,28 @@ class IBConnection:
         self.market_data_ticker = None
         self.monitored_symbol = None
         self.daily_pnl = None  # Updated via reqPnL subscription
+        self.cooldown_until: float = 0.0
+        self._load_persisted_cooldown()
+
+    def _load_persisted_cooldown(self):
+        try:
+            val = float(_COOLDOWN_FILE.read_text().strip())
+            self.cooldown_until = val if val > time.time() else 0.0
+        except Exception:
+            self.cooldown_until = 0.0
+
+    def _save_cooldown(self):
+        try:
+            _COOLDOWN_FILE.write_text(str(self.cooldown_until))
+        except Exception:
+            pass
+
+    def start_cooldown(self, seconds=180):
+        self.cooldown_until = time.time() + seconds
+        self._save_cooldown()
+
+    def in_cooldown(self):
+        return time.time() < self.cooldown_until
 
     async def connect(self, host="127.0.0.1", port=7497, client_id=1):
         """Connect to IB Gateway or TWS"""
@@ -182,11 +209,16 @@ class IBConnection:
         contracts = [cd.contract for cd in details]
         contracts.sort(key=lambda x: x.lastTradeDateOrContractMonth)
 
-        cutoff = datetime.now() + timedelta(days=7)
+        cutoff = (datetime.now() + timedelta(days=2)).date()
         for c in contracts:
             exp_str = c.lastTradeDateOrContractMonth
             try:
-                exp = datetime.strptime(exp_str, "%Y%m%d") if len(exp_str) == 8 else datetime.strptime(exp_str, "%Y%m")
+                if len(exp_str) == 8:
+                    exp = datetime.strptime(exp_str, "%Y%m%d").date()
+                else:
+                    d = datetime.strptime(exp_str, "%Y%m")
+                    last_day = calendar.monthrange(d.year, d.month)[1]
+                    exp = d.replace(day=last_day).date()
             except ValueError:
                 continue
             if exp > cutoff:
@@ -276,9 +308,80 @@ class IBConnection:
         if not wait_for_fill:
             return trade, limit_price
 
-        # Non-blocking: just return the trade and limit price
-        # Position tracking is handled by the background monitor
-        return trade, limit_price
+        # Wait for fill so stop loss is not placed before entry executes
+        while not trade.isDone():
+            await asyncio.sleep(0.05)
+
+        await asyncio.sleep(0.2)
+
+        fill_price = 0.0
+        for _ in range(5):
+            await asyncio.sleep(0.5)
+            if trade.fills:
+                total_qty = sum(f.execution.shares for f in trade.fills)
+                weighted_price = sum(f.execution.price * f.execution.shares for f in trade.fills)
+                fill_price = weighted_price / total_qty if total_qty > 0 else 0.0
+            if fill_price == 0.0 and trade.orderStatus.avgFillPrice:
+                fill_price = trade.orderStatus.avgFillPrice
+            if fill_price > 0.0:
+                break
+
+        return trade, fill_price
+
+    async def place_entry_order(self, contract, action, quantity, entry_price):
+        """Place entry order with correct type based on price vs market.
+
+        BUY above market → STOP (breakout), BUY below market → LIMIT (pullback).
+        SELL below market → STOP (breakout), SELL above market → LIMIT (pullback).
+        Uses a stop-limit with a small 0.25-point slippage buffer on the limit side.
+        Waits for fill and returns (trade, fill_price).
+        """
+        qualified = await self.ib.qualifyContractsAsync(contract)
+        if qualified:
+            contract = qualified[0]
+
+        market_price = await self.get_market_price(contract)
+
+        if market_price is None:
+            # Fall back to limit if we can't get market price
+            use_stop = False
+        elif action == "BUY":
+            use_stop = entry_price >= market_price
+        else:  # SELL
+            use_stop = entry_price <= market_price
+
+        if use_stop:
+            # Stop-limit: stop triggers at entry_price, limit allows small slippage
+            slip = 0.25
+            lmt = entry_price + slip if action == "BUY" else entry_price - slip
+            lmt = round(lmt * 4) / 4
+            order_desc = f"stop-limit (stop={entry_price}, lmt={lmt})"
+            order = StopLimitOrder(action, quantity, lmtPrice=lmt, stopPrice=entry_price)
+            order.outsideRth = True
+        else:
+            order_desc = f"limit @ {entry_price}"
+            order = LimitOrder(action, quantity, lmtPrice=entry_price)
+
+        print(f"Placing {action} {order_desc} entry order for {quantity}...")
+        trade = self.ib.placeOrder(contract, order)
+
+        while not trade.isDone():
+            await asyncio.sleep(0.05)
+
+        await asyncio.sleep(0.2)
+
+        fill_price = 0.0
+        for _ in range(5):
+            await asyncio.sleep(0.5)
+            if trade.fills:
+                total_qty = sum(f.execution.shares for f in trade.fills)
+                fill_price = sum(f.execution.price * f.execution.shares for f in trade.fills) / total_qty
+            if fill_price == 0.0 and trade.orderStatus.avgFillPrice:
+                fill_price = trade.orderStatus.avgFillPrice
+            if fill_price > 0.0:
+                break
+
+        return trade, fill_price
 
     async def place_stop_order(self, contract, action, quantity, stop_price, parent_order_id=None):
         """Place stop order"""
@@ -297,8 +400,26 @@ class IBConnection:
         trade = self.ib.placeOrder(contract, order)
         return trade
 
+    async def place_trailing_stop_order(self, contract, action, quantity, trail_amount, initial_stop_price=None):
+        """Place a trailing stop order with trail_amount in price points."""
+        qualified = await self.ib.qualifyContractsAsync(contract)
+        if qualified:
+            contract = qualified[0]
+
+        order = Order()
+        order.action = action
+        order.orderType = "TRAIL"
+        order.totalQuantity = quantity
+        order.auxPrice = trail_amount  # trail amount in points
+        order.outsideRth = True
+        if initial_stop_price is not None:
+            order.trailStopPrice = initial_stop_price
+
+        trade = self.ib.placeOrder(contract, order)
+        return trade
+
     async def execute_trade_with_ladder(
-        self, symbol, direction, entry_price, stop_points, quantity, ladder_steps
+        self, symbol, direction, entry_price, stop_points, quantity, ladder_steps, tp_points=None, trailing_stop=False
     ):
         """
         Execute futures trade with ladder system
@@ -337,12 +458,9 @@ class IBConnection:
         action = "BUY" if direction == "LONG" else "SELL"
 
         try:
-            # Place initial order (limit or market based on entry_price)
+            # Place initial order (limit/stop-limit or market based on entry_price)
             if entry_price:
-                print(f"Placing {action} limit order for {quantity} {symbol} @ {entry_price}...")
-                _, fill_price = await self.place_limit_order(
-                    contract, action, quantity, entry_price, wait_for_fill=True
-                )
+                _, fill_price = await self.place_entry_order(contract, action, quantity, entry_price)
             else:
                 print(f"Placing {action} market order for {quantity} {symbol}...")
                 _, fill_price = await self.place_market_order(contract, action, quantity)
@@ -404,10 +522,27 @@ class IBConnection:
             # Place stop loss to exit entire position
             stop_action = "SELL" if direction == "LONG" else "BUY"
 
-            print(
-                f"Placing {symbol} stop loss: {stop_action} {max_contracts} @ {stop_price} (based on expected avg {expected_avg:.2f})"
-            )
-            await self.place_stop_order(contract, stop_action, max_contracts, stop_price)
+            if trailing_stop:
+                print(
+                    f"Placing {symbol} trailing stop: {stop_action} {max_contracts}, trail={stop_points} pts, initial stop={stop_price}"
+                )
+                await self.place_trailing_stop_order(contract, stop_action, max_contracts, stop_points, initial_stop_price=stop_price)
+            else:
+                print(
+                    f"Placing {symbol} stop loss: {stop_action} {max_contracts} @ {stop_price} (based on expected avg {expected_avg:.2f})"
+                )
+                await self.place_stop_order(contract, stop_action, max_contracts, stop_price)
+
+            # Place TP limit order on exchange if requested (scalp mode)
+            tp_price = None
+            if tp_points and tp_points > 0:
+                tp_action = "SELL" if direction == "LONG" else "BUY"
+                if direction == "LONG":
+                    tp_price = round((fill_price + tp_points) * 4) / 4
+                else:
+                    tp_price = round((fill_price - tp_points) * 4) / 4
+                print(f"Placing TP limit order: {tp_action} {quantity} {symbol} @ {tp_price}")
+                await self.place_limit_order(contract, tp_action, quantity, tp_price, wait_for_fill=False)
 
             return {
                 "success": True,
@@ -422,6 +557,7 @@ class IBConnection:
                 "stop_price": stop_price,
                 "stop_quantity": max_contracts,
                 "expected_avg": expected_avg,
+                "tp_price": tp_price,
             }
 
         except Exception as e:
